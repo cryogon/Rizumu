@@ -5,12 +5,22 @@ type DownloadPayload struct {
 	Mode string `json:"mode"` // download | stream
 }
 
+type TaskStatus string
+
+const (
+	StatusPending     TaskStatus = "Pending"
+	StatusDownloading TaskStatus = "Downloading"
+	StatusComplete    TaskStatus = "Complete"
+	StatusFailed      TaskStatus = "StatusFailed"
+)
+
 type Task struct {
-	ID       int    `json:"id"`
-	URL      string `json:"url"`
-	Source   string `json:"source"`   // youtube | spotify | osu!
-	Progress int    `json:"progress"` // download progress
-	Status   string `json:"status"`   // Downloading | Completed | Failed
+	ID       int64      `json:"id"`
+	URL      string     `json:"url"`
+	Source   string     `json:"source"`   // youtube | spotify | osu!
+	Progress float64    `json:"progress"` // download progress
+	Status   TaskStatus `json:"status"`
+	Error    string     `json:"error,omitempty"`
 }
 
 type DownloadSource int

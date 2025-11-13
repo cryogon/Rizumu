@@ -1,3 +1,4 @@
+// Package downloader : handling all the downloading of songs
 package downloader
 
 import (
@@ -8,17 +9,26 @@ import (
 	"log"
 	"net/url"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 type Service struct {
-	JobQueue chan DownloadPayload
+	JobQueue chan *Task
+	tasks    map[int64]*Task
+	mu       sync.Mutex
+	nextID   int64
 }
 
 func NewService() *Service {
-	jobQueue := make(chan DownloadPayload, 100)
+	jobQueue := make(chan *Task, 100)
 	s := &Service{
 		JobQueue: jobQueue,
+		tasks:    make(map[int64]*Task),
+		mu:       sync.Mutex{},
+		nextID:   1,
 	}
 
 	go s.worker()
@@ -37,27 +47,47 @@ func (s *Service) CreateDownload(req DownloadPayload) (*Task, error) {
 		return nil, err
 	}
 
-	s.JobQueue <- req
+	s.mu.Lock()
+	newTask := &Task{
+		ID:       s.nextID,
+		Progress: 0,
+		URL:      req.URL,
+		Status:   StatusPending,
+		Source:   source.String(),
+	}
+	s.nextID++
+	s.tasks[newTask.ID] = newTask
+	s.mu.Unlock()
+
+	s.JobQueue <- newTask
 
 	log.Println("[Downloader] Pushed Download To The Queue")
 
-	// 3. Immediately return a "pending" task to the user.
-	return &Task{
-		ID:       0,
-		Progress: 0,
-		URL:      req.URL,
-		Status:   "Pending",
-		Source:   source.String(),
-	}, nil
+	return newTask, nil
 }
 
-func (s *Service) downloadFromYoutube(req DownloadPayload) (bool, error) {
+func (s *Service) GetTaskStatus(id int64) (*Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+
+	if !ok {
+		return nil, errors.New("task not found")
+	}
+
+	return task, nil
+}
+
+func (s *Service) downloadFromYoutube(task *Task) (bool, error) {
 	cmd := exec.Command(
 		"yt-dlp",
 		"--extract-audio",
 		"--audio-format", "mp3",
 		"-o", "./songs/%(title)s.%(ext)s",
-		req.URL,
+		"--progress",
+		"--newline",
+		task.URL,
 	)
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -75,8 +105,8 @@ func (s *Service) downloadFromYoutube(req DownloadPayload) (bool, error) {
 	}
 
 	// 3. Start goroutines to stream the output
-	go streamOutput(stdoutPipe, "[yt-dlp-out]")
-	go streamOutput(stderrPipe, "[yt-dlp-err]")
+	go s.streamOutput(stdoutPipe, "[yt-dlp-out]", task.ID)
+	go s.streamOutput(stderrPipe, "[yt-dlp-err]", task.ID)
 
 	if err := cmd.Wait(); err != nil {
 		return false, err
@@ -85,8 +115,8 @@ func (s *Service) downloadFromYoutube(req DownloadPayload) (bool, error) {
 	return true, nil
 }
 
-func (s *Service) downloadFromYoutubeMusic(req DownloadPayload) (bool, error) {
-	parsedURL, err := url.Parse(req.URL)
+func (s *Service) downloadFromYoutubeMusic(task *Task) (bool, error) {
+	parsedURL, err := url.Parse(task.URL)
 	if err != nil {
 		return false, err
 	}
@@ -100,11 +130,11 @@ func (s *Service) downloadFromYoutubeMusic(req DownloadPayload) (bool, error) {
 	videoID := queryParams["v"][0]
 
 	ytURL := fmt.Sprintf("https://youtube.com/watch?v=%s", videoID)
-
-	return s.downloadFromYoutube(DownloadPayload{
-		URL:  ytURL,
-		Mode: req.Mode,
-	})
+	ytTask := &Task{
+		ID:  task.ID,
+		URL: ytURL,
+	}
+	return s.downloadFromYoutube(ytTask)
 }
 
 func (s *Service) GetSource(req DownloadPayload) (DownloadSource, error) {
@@ -139,35 +169,39 @@ func (s *Service) worker() {
 
 	// This "for range" loop will block and wait until
 	// something new appears on the JobQueue.
-	for req := range s.JobQueue {
-		log.Printf("[Worker] Picked up job: %s", req.URL)
+	for task := range s.JobQueue {
+		log.Printf("[Worker] Picked up job: %d", task.ID)
 
-		// This is a blocking call, but it's okay
-		// because it's running in its OWN goroutine
-		// and not blocking the HTTP server.
-		err := s.runDownloadJob(req)
+		s.updateTaskStatus(task.ID, StatusDownloading, 0, "")
+
+		// blocking but it's running in its OWN goroutine
+		err := s.runDownloadJob(task)
+
 		if err != nil {
-			log.Printf("[Worker] ERROR running job %s: %v", req.URL, err)
+			log.Printf("[Worker] ERROR job %d: %v", task.ID, err)
+			s.updateTaskStatus(task.ID, StatusFailed, 0, err.Error())
 		} else {
-			log.Printf("[Worker] FINISHED job: %s", req.URL)
+			log.Printf("[Worker] FINISHED job %d", task.ID)
+			s.updateTaskStatus(task.ID, StatusComplete, 100, "")
 		}
 	}
 }
 
 // This is the new function your worker calls.
-func (s *Service) runDownloadJob(req DownloadPayload) error {
+func (s *Service) runDownloadJob(task *Task) error {
+	req := DownloadPayload{URL: task.URL, Mode: "download"}
 	source, err := s.GetSource(req)
 	if err != nil {
 		return fmt.Errorf("failed to get source: %w", err)
 	}
 
 	if source == SourceYoutube {
-		_, err := s.downloadFromYoutube(req)
+		_, err := s.downloadFromYoutube(task)
 		return err // This will be streamed
 	}
 
 	if source == SourceYTMusic {
-		_, err := s.downloadFromYoutubeMusic(req)
+		_, err := s.downloadFromYoutubeMusic(task)
 		return err // This will also be streamed
 	}
 
@@ -176,9 +210,40 @@ func (s *Service) runDownloadJob(req DownloadPayload) error {
 	return nil
 }
 
-func streamOutput(pipe io.ReadCloser, prefix string) {
+// This regex will find the percentage in "  [download]  10.5% of..."
+var progressRegex = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
+
+func (s *Service) streamOutput(pipe io.ReadCloser, prefix string, taskID int64) {
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
-		log.Printf("%s: %s", prefix, scanner.Text())
+		line := scanner.Text()
+		log.Printf("%s: %s", prefix, line)
+
+		matches := progressRegex.FindStringSubmatch(line)
+		if len(matches) > 1 {
+			// we found a percentage
+			progress, err := strconv.ParseFloat(matches[1], 64)
+			if err == nil {
+				s.updateTaskStatus(taskID, StatusDownloading, progress, "")
+			}
+		}
+	}
+}
+
+func (s *Service) updateTaskStatus(id int64, status TaskStatus, progress float64, errorMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task, ok := s.tasks[id]
+	if !ok {
+		return // Task was somehow deleted?
+	}
+
+	task.Status = status
+	if progress > task.Progress { // Only update if progress > current
+		task.Progress = progress
+	}
+	if errorMsg != "" {
+		task.Error = errorMsg
 	}
 }

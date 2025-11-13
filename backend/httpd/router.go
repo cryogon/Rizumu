@@ -1,3 +1,4 @@
+// Package httpd handles api
 package httpd
 
 import (
@@ -21,6 +22,7 @@ func NewRouter(dlSvc *downloader.Service) http.Handler {
 
 	// --- API Routes ---
 	r.Post("/download", srv.handleCreateDownload())
+	r.Get("/tasks/{taskID}", srv.handleGetTaskStatus())
 
 	return r
 }
