@@ -23,7 +23,7 @@ type Service struct {
 }
 
 func NewService() *Service {
-	jobQueue := make(chan *Task, 100)
+	jobQueue := make(chan *Task, 20)
 	s := &Service{
 		JobQueue: jobQueue,
 		tasks:    make(map[int64]*Task),
@@ -79,7 +79,7 @@ func (s *Service) GetTaskStatus(id int64) (*Task, error) {
 	return task, nil
 }
 
-func (s *Service) downloadFromYoutube(task *Task) (bool, error) {
+func (s *Service) downloadFromYoutube(task *Task) error {
 	cmd := exec.Command(
 		"yt-dlp",
 		"--extract-audio",
@@ -92,39 +92,35 @@ func (s *Service) downloadFromYoutube(task *Task) (bool, error) {
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return false, err
+		return err
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	// 2. Start the command (this is non-blocking)
 	if err := cmd.Start(); err != nil {
-		return false, err
+		return err
 	}
 
 	// 3. Start goroutines to stream the output
-	go s.streamOutput(stdoutPipe, "[yt-dlp-out]", task.ID)
-	go s.streamOutput(stderrPipe, "[yt-dlp-err]", task.ID)
+	go s.streamOutput(stdoutPipe, "[yt-dlp-out]", task)
+	go s.streamOutput(stderrPipe, "[yt-dlp-err]", task)
 
-	if err := cmd.Wait(); err != nil {
-		return false, err
-	}
-
-	return true, nil
+	return cmd.Wait()
 }
 
-func (s *Service) downloadFromYoutubeMusic(task *Task) (bool, error) {
+func (s *Service) downloadFromYoutubeMusic(task *Task) error {
 	parsedURL, err := url.Parse(task.URL)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	queryParams := parsedURL.Query()
 
 	if videoID, exists := queryParams["v"]; !exists || len(videoID) == 0 {
-		return false, errors.New("video id not found in url")
+		return errors.New("video id not found in url")
 	}
 
 	videoID := queryParams["v"][0]
@@ -135,6 +131,28 @@ func (s *Service) downloadFromYoutubeMusic(task *Task) (bool, error) {
 		URL: ytURL,
 	}
 	return s.downloadFromYoutube(ytTask)
+}
+
+func (s *Service) downloadFromSpotify(task *Task) error {
+	outputTemplate := "./songs/{title}.{output-ext}"
+	cmd := exec.Command(
+		"spotdl",
+		"download",
+		task.URL,
+		"--output", outputTemplate,
+	)
+
+	stdoutPipe, _ := cmd.StdoutPipe()
+	stderrPipe, _ := cmd.StderrPipe()
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	go s.streamOutput(stdoutPipe, "[spotdl-out]", task)
+	go s.streamOutput(stderrPipe, "[spotdl-err]", task)
+
+	return cmd.Wait()
 }
 
 func (s *Service) GetSource(req DownloadPayload) (DownloadSource, error) {
@@ -196,36 +214,82 @@ func (s *Service) runDownloadJob(task *Task) error {
 	}
 
 	if source == SourceYoutube {
-		_, err := s.downloadFromYoutube(task)
-		return err // This will be streamed
+		return s.downloadFromYoutube(task)
 	}
 
 	if source == SourceYTMusic {
-		_, err := s.downloadFromYoutubeMusic(task)
-		return err // This will also be streamed
+		return s.downloadFromYoutubeMusic(task)
 	}
 
-	// TODO: Add cases for Spotify, Osu
+	if source == SourceSpotify {
+		return s.downloadFromSpotify(task)
+	}
+
+	// TODO: Add case for Osu
 	log.Printf("[Worker] No handler for source: %s", source.String())
 	return nil
 }
 
-// This regex will find the percentage in "  [download]  10.5% of..."
-var progressRegex = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
+var (
+	// This regex will find the percentage in "  [download]  10.5% of..."
+	ytProgressRegex = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
 
-func (s *Service) streamOutput(pipe io.ReadCloser, prefix string, taskID int64) {
+	// This one finds "Found 38 songs in..."
+	spotdlTotalRegex = regexp.MustCompile(`Found (\d+) songs in .*`)
+
+	// This one finds 'Downloaded "..."'
+	spotdlDownloadRegex = regexp.MustCompile(`^(Downloaded|INFO:spotdl.download.downloader:Downloaded)`)
+
+	// This one finds 'LookupError: ...'
+	spotdlErrorRegex = regexp.MustCompile(`^(LookupError:|ERROR:spotdl.download.progress_handler:LookupError)`)
+)
+
+func (s *Service) streamOutput(pipe io.ReadCloser, prefix string, task *Task) {
 	scanner := bufio.NewScanner(pipe)
+	source, err := s.GetSource(DownloadPayload{URL: task.URL, Mode: "download"})
+	if err != nil {
+		return
+	}
+
+	totalSongs := 1.0
+	processedSongs := 0.0
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		log.Printf("%s: %s", prefix, line)
 
-		matches := progressRegex.FindStringSubmatch(line)
-		if len(matches) > 1 {
-			// we found a percentage
-			progress, err := strconv.ParseFloat(matches[1], 64)
-			if err == nil {
-				s.updateTaskStatus(taskID, StatusDownloading, progress, "")
+		if source == SourceYoutube || source == SourceYTMusic {
+			matches := ytProgressRegex.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				// we found a percentage
+				progress, err := strconv.ParseFloat(matches[1], 64)
+				if err == nil {
+					s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
+				}
 			}
+		} else if source == SourceSpotify {
+			// 1. Check for the "total" line
+			if matches := spotdlTotalRegex.FindStringSubmatch(line); len(matches) > 1 {
+				total, err := strconv.ParseFloat(matches[1], 64)
+				if err == nil && total > 0 {
+					totalSongs = total
+				}
+			}
+
+			// 2. Check for a "Downloaded" line
+			if spotdlDownloadRegex.MatchString(line) {
+				processedSongs++
+			}
+
+			// 3. Check for an "Error" line (still counts as processed)
+			if spotdlErrorRegex.MatchString(line) {
+				processedSongs++
+			}
+
+			// 4. Calculate and update status
+			// (We do this on any matching line, so it updates)
+			progress := (processedSongs / totalSongs) * 100
+			s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
 		}
 	}
 }
