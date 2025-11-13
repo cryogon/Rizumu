@@ -1,3 +1,4 @@
 songs/
 .env
-
+# apples garbage
+.DS_Store 
