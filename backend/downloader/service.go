@@ -8,11 +8,14 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+
+	"cryogon/rizumu-backend/utils"
 )
 
 type Service struct {
@@ -155,6 +158,90 @@ func (s *Service) downloadFromSpotify(task *Task) error {
 	return cmd.Wait()
 }
 
+func (s *Service) downloadFromOsu(task *Task) error {
+	parsedURL, err := url.Parse(task.URL)
+	if err != nil {
+		return err
+	}
+
+	paths := strings.Split(strings.TrimPrefix(parsedURL.Path, "/"), "/")
+
+	if len(paths) < 2 {
+		return fmt.Errorf("incorrect osu url. received %s", task.URL)
+	}
+
+	if paths[0] != "beatmapsets" {
+		return fmt.Errorf("incorrect osu path. received %s. id %s", paths, paths[0])
+	}
+
+	beatmapsetID := paths[1]
+	osuMirrorURL := fmt.Sprintf("https://osu.direct/api/d/%s", beatmapsetID)
+	log.Printf("[Worker] Downloading from %s\n", osuMirrorURL)
+	resp, err := utils.HTTPClient.Get(osuMirrorURL)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			log.Printf("WARN: failed to close response body: %v", err)
+		}
+	}()
+
+	totalSizeStr := resp.Header.Get("Content-Length")
+	totalSize, err := strconv.ParseInt(totalSizeStr, 10, 64)
+
+	if err != nil || totalSize <= 0 {
+		log.Printf("[Worker] WARN: Could not get Content-Length for %s.", osuMirrorURL)
+		return err
+	}
+
+	file, err := os.Create(fmt.Sprintf("./songs/%s.osz", beatmapsetID))
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Fatalf("ERROR: failed to close file %s: %v", file.Name(), err)
+		}
+	}()
+	var downloadedBytes int64 = 0
+	lastReportedProgress := -1.0 // So we report 0%
+	buf := make([]byte, 32*1024) // 32KB buffer
+
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			// Write the chunk to the file
+			if _, writeErr := file.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+
+			// Update our progress
+			downloadedBytes += int64(n)
+			progress := (float64(downloadedBytes) / float64(totalSize)) * 100
+
+			// Only update the map if progress has moved by at least 1%
+			// This avoids spamming the mutex lock on every 32KB chunk.
+			if (progress - lastReportedProgress) >= 1.0 {
+				s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
+				lastReportedProgress = progress
+			}
+		}
+
+		if err == io.EOF {
+			break // Download is finished
+		}
+		if err != nil {
+			return err // Some other network error
+		}
+	}
+
+	s.updateTaskStatus(task.ID, StatusDownloading, 100, "")
+	return nil
+}
+
 func (s *Service) GetSource(req DownloadPayload) (DownloadSource, error) {
 	parsedURL, err := url.Parse(req.URL)
 	if err != nil {
@@ -225,8 +312,9 @@ func (s *Service) runDownloadJob(task *Task) error {
 		return s.downloadFromSpotify(task)
 	}
 
-	// TODO: Add case for Osu
-	log.Printf("[Worker] No handler for source: %s", source.String())
+	if source == SourceOsu {
+		return s.downloadFromOsu(task)
+	}
 	return nil
 }
 
