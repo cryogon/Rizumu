@@ -11,10 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-type Server struct {
-	Downloader *downloader.Service
-}
-
 func (s *Server) handleCreateDownload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req downloader.DownloadPayload

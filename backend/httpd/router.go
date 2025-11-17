@@ -8,21 +8,35 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"cryogon/rizumu-backend/downloader"
+	"cryogon/rizumu-backend/spotify"
+	"cryogon/rizumu-backend/store"
 )
 
-func NewRouter(dlSvc *downloader.Service) http.Handler {
+type Server struct {
+	Downloader *downloader.Service
+	Spotify    *spotify.Client
+	Store      *store.Store
+}
+
+func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store) http.Handler {
 	// Create the Server struct that holds our service
 	srv := &Server{
 		Downloader: dlSvc,
+		Spotify:    spotifyClient,
+		Store:      db,
 	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	// --- API Routes ---
+	// Task Routes (from task_handlers.go)
 	r.Post("/download", srv.handleCreateDownload())
 	r.Get("/tasks/{taskID}", srv.handleGetTaskStatus())
+
+	// Auth Routes (from auth_handlers.go)
+	r.Get("/auth/spotify/login", srv.handleSpotifyLogin())
+	r.Get("/auth/spotify/callback", srv.handleSpotifyCallback())
 
 	return r
 }
