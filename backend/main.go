@@ -35,10 +35,8 @@ func main() {
 	dlSvc := downloader.NewService()
 	spotifyClient := spotify.NewClient(spotifyClientID, spotifyClientSecret)
 
-	// 2. Create the HTTP router (and give it the service)
 	router := httpd.NewRouter(dlSvc, spotifyClient, db)
 
-	// 3. Start the server and BLOCK forever
 	log.Println("Server listening on :8080")
 	if err := http.ListenAndServe(":8080", router); err != nil {
 		log.Fatalf("Server failed to start: %v", err)

@@ -11,7 +11,6 @@ import (
 
 const redirectURL = "http://localhost:8080/auth/spotify/callback"
 
-// These are the permissions we'll ask the user for.
 var scopes = []string{
 	auth.ScopePlaylistReadPrivate,
 	auth.ScopePlaylistReadCollaborative,
@@ -19,14 +18,12 @@ var scopes = []string{
 	auth.ScopeUserReadPrivate,
 }
 
-// Client is our wrapper for the Spotify authenticator and client.
 type Client struct {
 	auth *auth.Authenticator
 }
 
 // NewClient creates our client
 func NewClient(clientID, clientSecret string) *Client {
-	// 1. Create the authenticator
 	auth := auth.New(
 		auth.WithRedirectURL(redirectURL),
 		auth.WithScopes(scopes...),
@@ -45,9 +42,7 @@ func (c *Client) GetAuthURL(state string) string {
 	return c.auth.AuthURL(state)
 }
 
-// ExchangeCode is what you call in your /callback handler
 func (c *Client) ExchangeCode(r *http.Request, state string) (*oauth2.Token, error) {
-	// This gets the 'code' from the URL
 	token, err := c.auth.Token(r.Context(), state, r)
 	if err != nil {
 		return nil, err
@@ -59,11 +54,8 @@ func (c *Client) ExchangeCode(r *http.Request, state string) (*oauth2.Token, err
 // NewClientFromToken creates a *real* Spotify client
 // that can make API calls (like getting playlists).
 func (c *Client) NewClientFromToken(token *oauth2.Token) *spotify.Client {
-	// This creates an HTTP client that automatically adds the
-	// "Authorization: Bearer <token>" header to every request.
 	httpClient := c.auth.Client(context.Background(), token)
 
-	// Wrap that http client with the spotify.Client
 	client := spotify.New(httpClient)
 	return client
 }

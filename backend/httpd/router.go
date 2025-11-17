@@ -19,7 +19,6 @@ type Server struct {
 }
 
 func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store) http.Handler {
-	// Create the Server struct that holds our service
 	srv := &Server{
 		Downloader: dlSvc,
 		Spotify:    spotifyClient,
