@@ -36,6 +36,7 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	// Auth Routes (from auth_handlers.go)
 	r.Get("/auth/spotify/login", srv.handleSpotifyLogin())
 	r.Get("/auth/spotify/callback", srv.handleSpotifyCallback())
+	r.Post("/me/sync", srv.handleSyncSpotify())
 
 	return r
 }

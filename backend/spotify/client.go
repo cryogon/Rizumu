@@ -19,7 +19,9 @@ var scopes = []string{
 }
 
 type Client struct {
-	auth *auth.Authenticator
+	auth         *auth.Authenticator
+	ClientID     string
+	ClientSecret string
 }
 
 // NewClient creates our client
@@ -32,7 +34,9 @@ func NewClient(clientID, clientSecret string) *Client {
 	)
 
 	return &Client{
-		auth: auth,
+		auth:         auth,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
 	}
 }
 
@@ -58,4 +62,19 @@ func (c *Client) NewClientFromToken(token *oauth2.Token) *spotify.Client {
 
 	client := spotify.New(httpClient)
 	return client
+}
+
+// GetUserPlaylists fetches the authenticated user's playlists
+func (c *Client) GetUserPlaylists(ctx context.Context, token *oauth2.Token) ([]spotify.SimplePlaylist, error) {
+	// Create a client using the saved token
+	client := c.NewClientFromToken(token)
+
+	// Fetch playlists (fetching first 50 for now)
+	// In a real app, you'd handle pagination to get ALL of them.
+	page, err := client.CurrentUsersPlaylists(ctx, spotify.Limit(50))
+	if err != nil {
+		return nil, err
+	}
+
+	return page.Playlists, nil
 }

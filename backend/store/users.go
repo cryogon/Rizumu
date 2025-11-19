@@ -3,26 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"golang.org/x/oauth2"
 )
-
-type User struct {
-	ID       int64
-	Username string
-}
-
-type Connection struct {
-	ID           int64
-	UserID       int64
-	Provider     string
-	ProviderID   string
-	AccessToken  string
-	RefreshToken string
-	Expiry       time.Time
-	Metadata     string // For YTM Cookies later
-}
 
 // SaveSpotifyConnection links a Spotify account to a User
 func (s *Store) SaveSpotifyConnection(ctx context.Context, userID int64, spotifyID string, token *oauth2.Token) error {
@@ -84,4 +67,13 @@ func (s *Store) CreateAdminUser(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func (c *Connection) ToOAuthToken() *oauth2.Token {
+	return &oauth2.Token{
+		AccessToken:  c.AccessToken,
+		RefreshToken: c.RefreshToken,
+		Expiry:       c.Expiry,
+		TokenType:    "Bearer",
+	}
 }
