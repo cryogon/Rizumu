@@ -83,7 +83,9 @@ func (s *Store) migrate() error {
         
         -- Raw Data
         -- We dump the WHOLE JSON from Spotify/YTM here.
-        raw_metadata TEXT,         
+        raw_metadata TEXT, 
+
+				status TEXT DEFAULT 'Pending',
         
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(provider, provider_id)

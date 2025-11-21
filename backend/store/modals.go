@@ -15,7 +15,7 @@ type User struct {
 type Connection struct {
 	ID           int64     `json:"id"`
 	UserID       int64     `json:"user_id"`
-	Provider     string    `json:"provider"`    // 'spotify', 'osu', 'ytmusic'
+	Provider     string    `json:"provider"`    // 'spotify', 'osu!', 'ytmusic'
 	ProviderID   string    `json:"provider_id"` // The ID on that platform
 	AccessToken  string    `json:"-"`           // Never send to client
 	RefreshToken string    `json:"-"`           // Never send to client
@@ -70,6 +70,9 @@ type Song struct {
 	RawMetadata string `json:"-"`
 
 	CreatedAt time.Time `json:"created_at"`
+
+	// State
+	Status string `json:"status"`
 }
 
 // PlaylistSong links a Song to a Playlist

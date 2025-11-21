@@ -32,6 +32,7 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	// Task Routes (from task_handlers.go)
 	r.Post("/download", srv.handleCreateDownload())
 	r.Get("/tasks/{taskID}", srv.handleGetTaskStatus())
+	r.Get("/stream/{songID}", srv.handleStreamSong())
 
 	// Auth Routes (from auth_handlers.go)
 	r.Get("/auth/spotify/login", srv.handleSpotifyLogin())
