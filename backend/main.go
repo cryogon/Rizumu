@@ -32,7 +32,7 @@ func main() {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 
-	dlSvc := downloader.NewService()
+	dlSvc := downloader.NewService(db)
 	spotifyClient := spotify.NewClient(spotifyClientID, spotifyClientSecret)
 
 	router := httpd.NewRouter(dlSvc, spotifyClient, db)

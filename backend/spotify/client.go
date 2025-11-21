@@ -2,7 +2,11 @@ package spotify
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
+
+	"cryogon/rizumu-backend/store"
 
 	"github.com/zmb3/spotify/v2"
 	auth "github.com/zmb3/spotify/v2/auth"
@@ -77,4 +81,62 @@ func (c *Client) GetUserPlaylists(ctx context.Context, token *oauth2.Token) ([]s
 	}
 
 	return page.Playlists, nil
+}
+
+// FetchTracksFromURL is used for the "Explosion" strategy (Manual Playlist Download)
+func (c *Client) FetchTracksFromURL(ctx context.Context, token *oauth2.Token, url string) ([]*store.Song, error) {
+	client := c.NewClientFromToken(token)
+
+	// Parse ID from URL
+	// Format: .../playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
+	parts := strings.Split(url, "/")
+	lastPart := parts[len(parts)-1]
+	playlistIDStr := strings.Split(lastPart, "?")[0]
+	playlistID := spotify.ID(playlistIDStr)
+
+	// Get Tracks
+	playlistItems, err := client.GetPlaylistItems(ctx, playlistID)
+	if err != nil {
+		return nil, err
+	}
+
+	var songs []*store.Song
+
+	for _, item := range playlistItems.Items {
+		if item.Track.Track == nil {
+			continue
+		}
+
+		fullTrack := item.Track.Track
+
+		// Filter out non-tracks and local files
+		if fullTrack.Type != "track" || item.IsLocal {
+			continue
+		}
+
+		// Create partial Song object (to be saved by handler)
+		rawJSON, _ := json.Marshal(fullTrack)
+
+		s := &store.Song{
+			Title:       fullTrack.Name,
+			Artist:      "Unknown",
+			Album:       fullTrack.Album.Name,
+			DurationMs:  int64(fullTrack.Duration),
+			Provider:    "spotify",
+			ProviderID:  string(fullTrack.ID),
+			Status:      "Pending",
+			RawMetadata: string(rawJSON),
+		}
+
+		if len(fullTrack.Artists) > 0 {
+			s.Artist = fullTrack.Artists[0].Name
+		}
+		if len(fullTrack.Album.Images) > 0 {
+			s.ImageURL = fullTrack.Album.Images[0].URL
+		}
+
+		songs = append(songs, s)
+	}
+
+	return songs, nil
 }

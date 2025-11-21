@@ -2,7 +2,9 @@
 package downloader
 
 import (
+	"archive/zip"
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,84 +12,118 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
+	"cryogon/rizumu-backend/store"
 	"cryogon/rizumu-backend/utils"
+
+	"github.com/bogem/id3v2"
+)
+
+// --- Regex Definitions for Log Parsing ---
+var (
+	ytProgressRegex     = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
+	spotdlTotalRegex    = regexp.MustCompile(`Found (\d+) songs in .*`)
+	spotdlDownloadRegex = regexp.MustCompile(`^(Downloaded|INFO:spotdl.download.downloader:Downloaded)`)
+	spotdlErrorRegex    = regexp.MustCompile(`^(LookupError:|ERROR:spotdl.download.progress_handler:LookupError)`)
 )
 
 type Service struct {
 	JobQueue chan *Task
-	tasks    map[int64]*Task
-	mu       sync.Mutex
-	nextID   int64
+	Store    *store.Store
 }
 
-func NewService() *Service {
-	jobQueue := make(chan *Task, 20)
+func NewService(db *store.Store) *Service {
 	s := &Service{
-		JobQueue: jobQueue,
-		tasks:    make(map[int64]*Task),
-		mu:       sync.Mutex{},
-		nextID:   1,
+		JobQueue: make(chan *Task, 100),
+		Store:    db,
 	}
-
 	go s.worker()
-
 	return s
 }
 
-func (s *Service) CreateDownload(req DownloadPayload) (*Task, error) {
-	if req.Mode != "download" {
-		return nil, errors.New("this method only handles download")
+func (s *Service) CreateDownload(req DownloadPayload, taskID int64) (*Task, error) {
+	if taskID <= 0 {
+		return nil, errors.New("invalid task ID: must be > 0")
 	}
 
 	source, err := s.GetSource(req)
 	if err != nil {
-		log.Println("[Downloader] Failed to get the source", err)
 		return nil, err
 	}
 
-	s.mu.Lock()
 	newTask := &Task{
-		ID:       s.nextID,
-		Progress: 0,
-		URL:      req.URL,
-		Status:   StatusPending,
-		Source:   source.String(),
+		ID:     taskID,
+		URL:    req.URL,
+		Status: StatusPending,
+		Source: source.String(),
 	}
-	s.nextID++
-	s.tasks[newTask.ID] = newTask
-	s.mu.Unlock()
 
 	s.JobQueue <- newTask
-
-	log.Println("[Downloader] Pushed Download To The Queue")
-
+	log.Printf("[Downloader] Queued job for Song ID %d", taskID)
 	return newTask, nil
 }
 
-func (s *Service) GetTaskStatus(id int64) (*Task, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Service) worker() {
+	log.Println("[Worker] Ready for jobs.")
 
-	task, ok := s.tasks[id]
+	for task := range s.JobQueue {
+		log.Printf("[Worker] Processing %d (%s)", task.ID, task.Source)
 
-	if !ok {
-		return nil, errors.New("task not found")
+		// FIX 1: Handle error for Downloading status
+		if err := s.Store.UpdateSongStatus(context.Background(), task.ID, string(StatusDownloading)); err != nil {
+			log.Printf("[Worker] WARN: Failed to update status to Downloading: %v", err)
+		}
+
+		finalPath, err := s.runDownloadJob(task)
+
+		if err != nil {
+			log.Printf("[Worker] ERROR job %d: %v", task.ID, err)
+			// FIX 2: Handle error for Failed status
+			if dbErr := s.Store.UpdateSongStatus(context.Background(), task.ID, string(StatusFailed)); dbErr != nil {
+				log.Printf("[Worker] CRITICAL: Failed to mark job as failed: %v", dbErr)
+			}
+		} else {
+			log.Printf("[Worker] FINISHED job %d. Path: %s", task.ID, finalPath)
+			// FIX 3: Handle error for UpdatePath
+			if dbErr := s.Store.UpdateSongPath(context.Background(), task.ID, finalPath, 0); dbErr != nil {
+				log.Printf("[Worker] CRITICAL: Failed to save final path: %v", dbErr)
+			}
+		}
 	}
-
-	return task, nil
 }
 
-func (s *Service) downloadFromYoutube(task *Task) error {
+func (s *Service) runDownloadJob(task *Task) (string, error) {
+	req := DownloadPayload{URL: task.URL, Mode: "download"}
+	source, _ := s.GetSource(req)
+
+	switch source {
+	case SourceYoutube:
+		return s.downloadFromYoutube(task)
+	case SourceYTMusic:
+		return s.downloadFromYoutubeMusic(task)
+	case SourceSpotify:
+		return s.downloadFromSpotify(task)
+	case SourceOsu:
+		return s.downloadFromOsu(task)
+	}
+
+	return "", errors.New("unsupported source in worker")
+}
+
+// --- 1. YOUTUBE / YT MUSIC ---
+
+func (s *Service) downloadFromYoutube(task *Task) (string, error) {
+	finalPath := fmt.Sprintf("./songs/%d.mp3", task.ID)
+
 	cmd := exec.Command(
 		"yt-dlp",
 		"--extract-audio",
 		"--audio-format", "mp3",
-		"-o", "./songs/%(title)s.%(ext)s",
+		"-o", finalPath,
 		"--progress",
 		"--newline",
 		task.URL,
@@ -95,307 +131,357 @@ func (s *Service) downloadFromYoutube(task *Task) error {
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	// 2. Start the command (this is non-blocking)
 	if err := cmd.Start(); err != nil {
-		return err
+		return "", err
 	}
 
-	// 3. Start goroutines to stream the output
 	go s.streamOutput(stdoutPipe, "[yt-dlp-out]", task)
 	go s.streamOutput(stderrPipe, "[yt-dlp-err]", task)
 
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		return "", err
+	}
+
+	return finalPath, nil
 }
 
-func (s *Service) downloadFromYoutubeMusic(task *Task) error {
-	parsedURL, err := url.Parse(task.URL)
-	if err != nil {
-		return err
-	}
-
-	queryParams := parsedURL.Query()
-
-	if videoID, exists := queryParams["v"]; !exists || len(videoID) == 0 {
-		return errors.New("video id not found in url")
-	}
-
-	videoID := queryParams["v"][0]
-
-	ytURL := fmt.Sprintf("https://youtube.com/watch?v=%s", videoID)
-	ytTask := &Task{
-		ID:  task.ID,
-		URL: ytURL,
-	}
-	return s.downloadFromYoutube(ytTask)
+func (s *Service) downloadFromYoutubeMusic(task *Task) (string, error) {
+	return s.downloadFromYoutube(task)
 }
 
-func (s *Service) downloadFromSpotify(task *Task) error {
-	outputTemplate := "./songs/{title}.{output-ext}"
+// --- 2. SPOTIFY ---
+
+func (s *Service) downloadFromSpotify(task *Task) (string, error) {
+	finalPath := fmt.Sprintf("./songs/%d.mp3", task.ID)
+	spotdlTemplate := fmt.Sprintf("./songs/%d.{output-ext}", task.ID)
+
 	cmd := exec.Command(
 		"spotdl",
 		"download",
 		task.URL,
-		"--output", outputTemplate,
+		"--format", "mp3",
+		"--output", spotdlTemplate,
 	)
 
-	stdoutPipe, _ := cmd.StdoutPipe()
-	stderrPipe, _ := cmd.StderrPipe()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", err
+	}
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return "", err
 	}
 
 	go s.streamOutput(stdoutPipe, "[spotdl-out]", task)
 	go s.streamOutput(stderrPipe, "[spotdl-err]", task)
 
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		return "", err
+	}
+
+	return finalPath, nil
 }
 
-func (s *Service) downloadFromOsu(task *Task) error {
+func (s *Service) downloadFromOsu(task *Task) (string, error) {
+	log.Printf("[Worker] Starting Osu processing for: %s", task.URL)
+
 	parsedURL, err := url.Parse(task.URL)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	paths := strings.Split(strings.TrimPrefix(parsedURL.Path, "/"), "/")
-
-	if len(paths) < 2 {
-		return fmt.Errorf("incorrect osu url. received %s", task.URL)
+	downloadURL := task.URL
+	if strings.Contains(parsedURL.Host, "osu.ppy.sh") {
+		paths := strings.Split(strings.TrimPrefix(parsedURL.Path, "/"), "/")
+		if len(paths) >= 2 && paths[0] == "beatmapsets" {
+			beatmapsetID := paths[1]
+			downloadURL = fmt.Sprintf("https://osu.direct/api/d/%s", beatmapsetID)
+		} else {
+			return "", fmt.Errorf("unsupported osu url format: %s", task.URL)
+		}
 	}
 
-	if paths[0] != "beatmapsets" {
-		return fmt.Errorf("incorrect osu path. received %s. id %s", paths, paths[0])
-	}
-
-	beatmapsetID := paths[1]
-	osuMirrorURL := fmt.Sprintf("https://osu.direct/api/d/%s", beatmapsetID)
-	log.Printf("[Worker] Downloading from %s\n", osuMirrorURL)
-	resp, err := utils.HTTPClient.Get(osuMirrorURL)
+	tempOszPath := fmt.Sprintf("./songs/temp_%d.osz", task.ID)
+	outFile, err := os.Create(tempOszPath)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 
+	resp, err := utils.HTTPClient.Get(downloadURL)
+	if err != nil {
+		if closeErr := outFile.Close(); closeErr != nil {
+			log.Printf("WARN: Failed to close temp file: %v", closeErr)
+		}
+		return "", fmt.Errorf("http get failed: %w", err)
+	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			log.Printf("WARN: failed to close response body: %v", err)
+		if cErr := resp.Body.Close(); cErr != nil {
+			log.Printf("WARN: Failed to close response body: %v", cErr)
 		}
 	}()
 
 	totalSizeStr := resp.Header.Get("Content-Length")
-	totalSize, err := strconv.ParseInt(totalSizeStr, 10, 64)
+	totalSize, _ := strconv.ParseInt(totalSizeStr, 10, 64)
 
-	if err != nil || totalSize <= 0 {
-		log.Printf("[Worker] WARN: Could not get Content-Length for %s.", osuMirrorURL)
-		return err
+	var downloadedBytes int64 = 0
+	lastReportedProgress := -5.0
+	buf := make([]byte, 32*1024)
+
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := outFile.Write(buf[:n]); writeErr != nil {
+				if closeErr := outFile.Close(); closeErr != nil {
+					log.Printf("WARN: Failed to close temp file on write error: %v", closeErr)
+				}
+				return "", writeErr
+			}
+
+			downloadedBytes += int64(n)
+
+			if totalSize > 0 {
+				progress := (float64(downloadedBytes) / float64(totalSize)) * 100
+				if (progress - lastReportedProgress) >= 1.0 {
+					if dbErr := s.Store.UpdateSongProgress(context.Background(), task.ID, progress); dbErr != nil {
+						log.Printf("WARN: Failed to update DB progress: %v", dbErr)
+					}
+					lastReportedProgress = progress
+				}
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			if closeErr := outFile.Close(); closeErr != nil {
+				log.Printf("WARN: Failed to close temp file on read error: %v", closeErr)
+			}
+			return "", readErr
+		}
 	}
 
-	file, err := os.Create(fmt.Sprintf("./songs/%s.osz", beatmapsetID))
+	if err := outFile.Close(); err != nil {
+		return "", fmt.Errorf("failed to close osz file: %w", err)
+	}
+
+	r, err := zip.OpenReader(tempOszPath)
+	if err != nil {
+		if rmErr := os.Remove(tempOszPath); rmErr != nil {
+			log.Printf("WARN: Failed to remove invalid zip: %v", rmErr)
+		}
+		return "", fmt.Errorf("failed to open osz: %w", err)
+	}
+	defer func() {
+		if cErr := r.Close(); cErr != nil {
+			log.Printf("WARN: Failed to close zip reader: %v", cErr)
+		}
+	}()
+
+	var meta OsuMetadata
+	foundOsu := false
+
+	for _, f := range r.File {
+		if strings.HasSuffix(f.Name, ".osu") {
+			rc, err := f.Open()
+			if err == nil {
+				meta = parseOsuFile(rc)
+				foundOsu = true
+				if cErr := rc.Close(); cErr != nil {
+					log.Printf("WARN: Failed to close .osu file: %v", cErr)
+				}
+			} else {
+				log.Printf("WARN: Failed to open .osu file: %v", err)
+			}
+		}
+	}
+
+	if !foundOsu {
+		if rmErr := os.Remove(tempOszPath); rmErr != nil {
+			log.Printf("WARN: Failed to remove temp osz: %v", rmErr)
+		}
+		return "", errors.New("no .osu file found in archive")
+	}
+
+	var finalAudioPath string
+	var finalImagePath string
+
+	for _, f := range r.File {
+		if strings.EqualFold(f.Name, meta.AudioFilename) {
+			finalAudioPath = fmt.Sprintf("./songs/%d.mp3", task.ID)
+			if err := extractFileFromZip(f, finalAudioPath); err != nil {
+				return "", err
+			}
+		}
+		if meta.BgFilename != "" && strings.EqualFold(f.Name, meta.BgFilename) {
+			ext := filepath.Ext(f.Name)
+			finalImagePath = fmt.Sprintf("./covers/%d%s", task.ID, ext)
+			if mkErr := os.MkdirAll("./covers", 0o755); mkErr != nil {
+				log.Printf("WARN: Failed to create covers dir: %v", mkErr)
+			}
+			if extractErr := extractFileFromZip(f, finalImagePath); extractErr != nil {
+				log.Printf("WARN: Failed to extract bg image: %v", extractErr)
+			}
+		}
+	}
+
+	if finalAudioPath == "" {
+		if rmErr := os.Remove(tempOszPath); rmErr != nil {
+			log.Printf("WARN: Failed to remove temp osz: %v", rmErr)
+		}
+		return "", errors.New("audio file not found in osz")
+	}
+
+	tag, err := id3v2.Open(finalAudioPath, id3v2.Options{Parse: true})
+	if err == nil {
+		defer func() {
+			if cErr := tag.Close(); cErr != nil {
+				log.Printf("WARN: Failed to close ID3 tag: %v", cErr)
+			}
+		}()
+
+		tag.SetTitle(meta.Title)
+		tag.SetArtist(meta.Artist)
+		tag.SetAlbum("osu! - " + meta.Version)
+
+		if finalImagePath != "" {
+			imgBytes, err := os.ReadFile(finalImagePath)
+			if err == nil {
+				pic := id3v2.PictureFrame{
+					Encoding:    id3v2.EncodingISO,
+					MimeType:    "image/jpeg",
+					PictureType: id3v2.PTFrontCover,
+					Description: "Cover",
+					Picture:     imgBytes,
+				}
+				tag.AddAttachedPicture(pic)
+			} else {
+				log.Printf("WARN: Failed to read cover image for embedding: %v", err)
+			}
+		}
+		if saveErr := tag.Save(); saveErr != nil {
+			log.Printf("WARN: Failed to save ID3 tags: %v", saveErr)
+		}
+	} else {
+		log.Printf("WARN: Failed to open mp3 for tagging: %v", err)
+	}
+
+	dbUpdate := &store.Song{
+		ID:       task.ID,
+		FilePath: finalAudioPath,
+		ImageURL: finalImagePath,
+		Title:    meta.Title,
+		Artist:   meta.Artist,
+		BPM:      meta.BPM,
+	}
+
+	if err := s.Store.UpdateSongFullMetadata(context.Background(), dbUpdate); err != nil {
+		log.Printf("WARN: Failed to update DB metadata: %v", err)
+	}
+
+	if rmErr := os.Remove(tempOszPath); rmErr != nil {
+		log.Printf("WARN: Failed to cleanup temp osz: %v", rmErr)
+	}
+
+	return finalAudioPath, nil
+}
+
+// --- HELPERS ---
+
+func extractFileFromZip(f *zip.File, destPath string) error {
+	rc, err := f.Open()
 	if err != nil {
 		return err
 	}
-
 	defer func() {
-		if err := file.Close(); err != nil {
-			log.Fatalf("ERROR: failed to close file %s: %v", file.Name(), err)
+		_ = rc.Close()
+	}()
+
+	outFile, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cErr := outFile.Close(); cErr != nil {
+			log.Printf("WARN: Failed to close extracted file %s: %v", destPath, cErr)
 		}
 	}()
-	var downloadedBytes int64 = 0
-	lastReportedProgress := -1.0 // So we report 0%
-	buf := make([]byte, 32*1024) // 32KB buffer
 
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			// Write the chunk to the file
-			if _, writeErr := file.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-
-			// Update our progress
-			downloadedBytes += int64(n)
-			progress := (float64(downloadedBytes) / float64(totalSize)) * 100
-
-			// Only update the map if progress has moved by at least 1%
-			// This avoids spamming the mutex lock on every 32KB chunk.
-			if (progress - lastReportedProgress) >= 1.0 {
-				s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
-				lastReportedProgress = progress
-			}
-		}
-
-		if err == io.EOF {
-			break // Download is finished
-		}
-		if err != nil {
-			return err // Some other network error
-		}
+	if _, err := io.Copy(outFile, rc); err != nil {
+		return err
 	}
-
-	s.updateTaskStatus(task.ID, StatusDownloading, 100, "")
 	return nil
 }
 
 func (s *Service) GetSource(req DownloadPayload) (DownloadSource, error) {
-	parsedURL, err := url.Parse(req.URL)
+	u, err := url.Parse(req.URL)
 	if err != nil {
-		return SourceUnknown, fmt.Errorf("could not parse URL: %w", err)
+		return SourceUnknown, err
 	}
 
-	host := parsedURL.Hostname()
-
-	if strings.HasSuffix(host, "music.youtube.com") {
+	host := u.Host
+	if strings.Contains(host, "music.youtube.com") {
 		return SourceYTMusic, nil
 	}
-
-	if strings.HasSuffix(host, "youtube.com") {
+	if strings.Contains(host, "youtube.com") || strings.Contains(host, "youtu.be") {
 		return SourceYoutube, nil
 	}
-
-	if strings.HasSuffix(host, "spotify.com") {
+	if strings.Contains(host, "spotify.com") {
 		return SourceSpotify, nil
 	}
-
-	if strings.HasSuffix(host, "osu.ppy.sh") {
+	if strings.Contains(host, "osu.ppy.sh") {
 		return SourceOsu, nil
 	}
 
-	return SourceOsu, errors.New("unsupported source")
+	return SourceUnknown, fmt.Errorf("unknown source for url: %s", req.URL)
 }
-
-func (s *Service) worker() {
-	log.Println("[Worker] Starting up. Ready for jobs.")
-
-	// This "for range" loop will block and wait until
-	// something new appears on the JobQueue.
-	for task := range s.JobQueue {
-		log.Printf("[Worker] Picked up job: %d", task.ID)
-
-		s.updateTaskStatus(task.ID, StatusDownloading, 0, "")
-
-		// blocking but it's running in its OWN goroutine
-		err := s.runDownloadJob(task)
-
-		if err != nil {
-			log.Printf("[Worker] ERROR job %d: %v", task.ID, err)
-			s.updateTaskStatus(task.ID, StatusFailed, 0, err.Error())
-		} else {
-			log.Printf("[Worker] FINISHED job %d", task.ID)
-			s.updateTaskStatus(task.ID, StatusComplete, 100, "")
-		}
-	}
-}
-
-// This is the new function your worker calls.
-func (s *Service) runDownloadJob(task *Task) error {
-	req := DownloadPayload{URL: task.URL, Mode: "download"}
-	source, err := s.GetSource(req)
-	if err != nil {
-		return fmt.Errorf("failed to get source: %w", err)
-	}
-
-	if source == SourceYoutube {
-		return s.downloadFromYoutube(task)
-	}
-
-	if source == SourceYTMusic {
-		return s.downloadFromYoutubeMusic(task)
-	}
-
-	if source == SourceSpotify {
-		return s.downloadFromSpotify(task)
-	}
-
-	if source == SourceOsu {
-		return s.downloadFromOsu(task)
-	}
-	return nil
-}
-
-var (
-	// This regex will find the percentage in "  [download]  10.5% of..."
-	ytProgressRegex = regexp.MustCompile(`\[download\]\s+(\d+\.?\d*)%`)
-
-	// This one finds "Found 38 songs in..."
-	spotdlTotalRegex = regexp.MustCompile(`Found (\d+) songs in .*`)
-
-	// This one finds 'Downloaded "..."'
-	spotdlDownloadRegex = regexp.MustCompile(`^(Downloaded|INFO:spotdl.download.downloader:Downloaded)`)
-
-	// This one finds 'LookupError: ...'
-	spotdlErrorRegex = regexp.MustCompile(`^(LookupError:|ERROR:spotdl.download.progress_handler:LookupError)`)
-)
 
 func (s *Service) streamOutput(pipe io.ReadCloser, prefix string, task *Task) {
 	scanner := bufio.NewScanner(pipe)
-	source, err := s.GetSource(DownloadPayload{URL: task.URL, Mode: "download"})
-	if err != nil {
-		return
-	}
 
 	totalSongs := 1.0
 	processedSongs := 0.0
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		log.Printf("%s: %s", prefix, line)
+		log.Printf("%s %s", prefix, line)
 
-		if source == SourceYoutube || source == SourceYTMusic {
-			matches := ytProgressRegex.FindStringSubmatch(line)
-			if len(matches) > 1 {
-				// we found a percentage
-				progress, err := strconv.ParseFloat(matches[1], 64)
-				if err == nil {
-					s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
-				}
-			}
-		} else if source == SourceSpotify {
-			// 1. Check for the "total" line
+		// Logic A: Spotify (Multi-file parsing)
+		if task.Source == "spotify" {
 			if matches := spotdlTotalRegex.FindStringSubmatch(line); len(matches) > 1 {
-				total, err := strconv.ParseFloat(matches[1], 64)
-				if err == nil && total > 0 {
+				if total, err := strconv.ParseFloat(matches[1], 64); err == nil && total > 0 {
 					totalSongs = total
 				}
 			}
-
-			// 2. Check for a "Downloaded" line
 			if spotdlDownloadRegex.MatchString(line) {
 				processedSongs++
 			}
-
-			// 3. Check for an "Error" line (still counts as processed)
 			if spotdlErrorRegex.MatchString(line) {
 				processedSongs++
 			}
 
-			// 4. Calculate and update status
-			// (We do this on any matching line, so it updates)
 			progress := (processedSongs / totalSongs) * 100
-			s.updateTaskStatus(task.ID, StatusDownloading, progress, "")
+			// Ignore DB error in logging loop
+			_ = s.Store.UpdateSongProgress(context.Background(), task.ID, progress)
+
+		} else {
+			// Logic B: YouTube/Standard (Percentage Parsing)
+			matches := ytProgressRegex.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				if p, err := strconv.ParseFloat(matches[1], 64); err == nil {
+					_ = s.Store.UpdateSongProgress(context.Background(), task.ID, p)
+				}
+			}
 		}
-	}
-}
-
-func (s *Service) updateTaskStatus(id int64, status TaskStatus, progress float64, errorMsg string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	task, ok := s.tasks[id]
-	if !ok {
-		return // Task was somehow deleted?
-	}
-
-	task.Status = status
-	if progress > task.Progress { // Only update if progress > current
-		task.Progress = progress
-	}
-	if errorMsg != "" {
-		task.Error = errorMsg
 	}
 }

@@ -22,32 +22,6 @@ func (s *Store) SavePlaylist(ctx context.Context, p *Playlist) (int64, error) {
 	return id, err
 }
 
-func (s *Store) SaveSong(ctx context.Context, song *Song) (int64, error) {
-	query := `
-	INSERT INTO songs (title, artist, album, image_url, duration_ms, bpm, energy, valence, provider, provider_id, raw_metadata)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(provider, provider_id) DO UPDATE SET
-		image_url = excluded.image_url,
-		bpm = excluded.bpm,
-		energy = excluded.energy,
-		valence = excluded.valence,
-		raw_metadata = excluded.raw_metadata;
-	`
-	_, err := s.db.ExecContext(ctx, query,
-		song.Title, song.Artist, song.Album, song.ImageURL, song.DurationMs,
-		song.BPM, song.Energy, song.Valence,
-		song.Provider, song.ProviderID, song.RawMetadata,
-	)
-	if err != nil {
-		return 0, err
-	}
-
-	var id int64
-	err = s.db.QueryRowContext(ctx, "SELECT id FROM songs WHERE provider=? AND provider_id=?",
-		song.Provider, song.ProviderID).Scan(&id)
-	return id, err
-}
-
 // AddSongToPlaylist links them in the join table
 func (s *Store) AddSongToPlaylist(ctx context.Context, playlistID, songID int64) error {
 	query := `INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id) VALUES (?, ?)`
