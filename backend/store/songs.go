@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 func (s *Store) SaveSong(ctx context.Context, song *Song) (int64, error) {
@@ -37,14 +38,14 @@ func (s *Store) SaveSong(ctx context.Context, song *Song) (int64, error) {
 }
 
 func (s *Store) GetSong(ctx context.Context, id int64) (*Song, error) {
-	query := `SELECT id, title, artist, album, image_url, provider, provider_id, file_path, status, bpm, energy, valence 
+	query := `SELECT id, title, artist, album, image_url, provider, provider_id, file_path, status, bpm, energy, valence, duration_ms 
 	          FROM songs WHERE id = ?`
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	var song Song
 	var filePath sql.NullString
 	err := row.Scan(&song.ID, &song.Title, &song.Artist, &song.Album, &song.ImageURL,
-		&song.Provider, &song.ProviderID, &filePath, &song.Status, &song.BPM, &song.Energy, &song.Valence)
+		&song.Provider, &song.ProviderID, &filePath, &song.Status, &song.BPM, &song.Energy, &song.Valence, &song.DurationMs)
 	if err != nil {
 		return nil, err
 	}
@@ -75,4 +76,18 @@ func (s *Store) UpdateSongFullMetadata(ctx context.Context, song *Song) error {
 	WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, query, song.FilePath, song.ImageURL, song.Title, song.Artist, song.BPM, song.ID)
 	return err
+}
+
+func (s *Store) ResetStuckDownloads(ctx context.Context) error {
+	query := `UPDATE songs SET status = 'Pending' WHERE status = 'Downloading'`
+	result, err := s.db.ExecContext(ctx, query)
+	if err != nil {
+		return err
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows > 0 {
+		log.Printf("Reset %d rows", rows)
+	}
+	return nil
 }

@@ -40,7 +40,13 @@ func (s *Server) handleStreamSong() http.HandlerFunc {
 			return
 		}
 
-		log.Printf("Song %d not found on disk. Trigerring auto-download.", songID)
+		if song.Status == string(downloader.StatusDownloading) {
+			w.WriteHeader(http.StatusAccepted)
+			w.Write([]byte("Buffering..."))
+			return
+		}
+
+		log.Printf("Song %d not found on disk. Trigerring new download.", songID)
 		payload := downloader.DownloadPayload{
 			Mode: "download",
 			URL:  "",
@@ -51,6 +57,7 @@ func (s *Server) handleStreamSong() http.HandlerFunc {
 			http.Error(w, err.Error(), 400)
 			return
 		}
+
 		payload.URL = sourceURL
 
 		_, err = s.Downloader.CreateDownload(payload, songID)

@@ -179,17 +179,65 @@ func (s *Service) downloadFromSpotify(task *Task) (string, error) {
 		return "", err
 	}
 
-	if err := cmd.Start(); err != nil {
-		return "", err
+	if err := cmd.Start(); err == nil {
+		go s.streamOutput(stdoutPipe, "[spotdl-out]", task)
+		go s.streamOutput(stderrPipe, "[spotdl-err]", task)
+
+		if err := cmd.Wait(); err == nil {
+			if _, err := os.Stat(finalPath); err == nil {
+				return finalPath, nil
+			}
+		}
+	}
+	log.Printf("[Worker] spotdl failed for %d. Attempting Brute Force Fallback...", task.ID)
+	song, err := s.Store.GetSong(context.Background(), task.ID)
+	if err != nil {
+		return "", fmt.Errorf("fallback failed: could not get metadata: %w", err)
 	}
 
-	go s.streamOutput(stdoutPipe, "[spotdl-out]", task)
-	go s.streamOutput(stderrPipe, "[spotdl-err]", task)
+	searchQuery := fmt.Sprintf("ytsearch5:%s - %s", song.Artist, song.Title)
+	songDuration := song.DurationMs / 1000
+	lowerBound := max(songDuration-30, 0)
+	matchFilter := fmt.Sprintf("duration > %d & duration < %d", lowerBound, songDuration+30) // adding extra 30 secs just in case
+	log.Printf("[Worker] Searching YouTube for: %s; filter:%s", searchQuery, matchFilter)
 
-	if err := cmd.Wait(); err != nil {
-		return "", err
+	fallbackCmd := exec.Command(
+		"yt-dlp",
+		"--extract-audio",
+		"--audio-format", "mp3",
+		"-o", finalPath,
+		"--progress",
+		"--newline",
+		"--match-filter", matchFilter,
+		// stop after downloading exactly one file
+		"--max-downloads", "1",
+		searchQuery,
+	)
+
+	stdout, _ := fallbackCmd.StdoutPipe()
+	stderr, _ := fallbackCmd.StderrPipe()
+
+	if err := fallbackCmd.Start(); err != nil {
+		return "", fmt.Errorf("fallback start failed: %w", err)
 	}
 
+	go s.streamOutput(stdout, "[fallback-out]", task)
+	go s.streamOutput(stderr, "[fallback-err]", task)
+
+	if err := fallbackCmd.Wait(); err != nil {
+		// Check if it's the specific "Max Downloads Reached" error (Exit Code 101)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 101 {
+			// This is actually a success for us if the file exists
+			if _, statErr := os.Stat(finalPath); statErr == nil {
+				log.Printf("[Worker] Fallback hit max-downloads limit (expected).")
+				return finalPath, nil
+			}
+		}
+		return "", fmt.Errorf("fallback download failed: %w", err)
+	}
+
+	log.Printf("[Worker] Fallback successful for %s", song.Title)
 	return finalPath, nil
 }
 

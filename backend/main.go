@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -30,6 +31,10 @@ func main() {
 	db, err := store.NewSQLiteStore("rizumu.db")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
+	}
+
+	if err := db.ResetStuckDownloads(context.Background()); err != nil {
+		log.Printf("WARN: Failed to reset stuck downloads: %v", err)
 	}
 
 	dlSvc := downloader.NewService(db)
