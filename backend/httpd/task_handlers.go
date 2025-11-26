@@ -69,7 +69,7 @@ func (s *Server) handleGetTaskStatus() http.HandlerFunc {
 func (s *Server) processPlaylistDownload(w http.ResponseWriter, r *http.Request, url string) {
 	conn, _ := s.Store.GetSpotifyConnection(r.Context(), 1)
 	if conn == nil {
-		http.Error(w, "Login required", 401)
+		http.Error(w, "Login required", http.StatusUnauthorized)
 		return
 	}
 

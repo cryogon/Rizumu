@@ -39,5 +39,8 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	r.Get("/auth/spotify/callback", srv.handleSpotifyCallback())
 	r.Post("/me/sync", srv.handleSyncSpotify())
 
+	// Playlists
+	r.Get("/playlists", srv.getPlaylists())
+
 	return r
 }
