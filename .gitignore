@@ -2,6 +2,7 @@ songs/
 covers/
 .env
 *.db
+test*.go
 
 # apple's garbage
 .DS_Store 
