@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -115,8 +116,6 @@ func (s *Service) runDownloadJob(task *Task) (string, error) {
 	return "", errors.New("unsupported source in worker")
 }
 
-// --- 1. YOUTUBE / YT MUSIC ---
-
 func (s *Service) downloadFromYoutube(task *Task) (string, error) {
 	finalPath := fmt.Sprintf("./songs/%d.mp3", task.ID)
 
@@ -127,6 +126,8 @@ func (s *Service) downloadFromYoutube(task *Task) (string, error) {
 		"-o", finalPath,
 		"--progress",
 		"--newline",
+		"--add-metadata",
+		"--embed-thumbnail",
 		task.URL,
 	)
 
@@ -150,14 +151,14 @@ func (s *Service) downloadFromYoutube(task *Task) (string, error) {
 		return "", err
 	}
 
+	s.applyMetadata(finalPath, task.ID)
+
 	return finalPath, nil
 }
 
 func (s *Service) downloadFromYoutubeMusic(task *Task) (string, error) {
 	return s.downloadFromYoutube(task)
 }
-
-// --- 2. SPOTIFY ---
 
 func (s *Service) downloadFromSpotify(task *Task) (string, error) {
 	finalPath := fmt.Sprintf("./songs/%d.mp3", task.ID)
@@ -304,7 +305,16 @@ func (s *Service) downloadFromOsu(task *Task) (string, error) {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 
-	resp, err := utils.HTTPClient.Get(downloadURL)
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		if closeErr := outFile.Close(); closeErr != nil {
+			log.Printf("WARN: Failed to close temp file: %v", closeErr)
+		}
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Rizumu/1.0)")
+
+	resp, err := utils.HTTPClient.Do(req)
 	if err != nil {
 		if closeErr := outFile.Close(); closeErr != nil {
 			log.Printf("WARN: Failed to close temp file: %v", closeErr)
@@ -343,6 +353,7 @@ func (s *Service) downloadFromOsu(task *Task) (string, error) {
 						log.Printf("WARN: Failed to update DB progress: %v", dbErr)
 					}
 					lastReportedProgress = progress
+					log.Printf("Download Progress: %f", progress)
 				}
 			}
 		}
@@ -428,6 +439,14 @@ func (s *Service) downloadFromOsu(task *Task) (string, error) {
 		return "", errors.New("audio file not found in osz")
 	}
 
+	durationMs := int64(0)
+	probeMeta, err := ProbeFile(finalAudioPath)
+	if err == nil {
+		durationMs = probeMeta.DurationMs
+	} else {
+		log.Printf("WARN: Failed to probe osu audio file: %v", err)
+	}
+
 	tag, err := id3v2.Open(finalAudioPath, id3v2.Options{Parse: true})
 	if err == nil {
 		defer func() {
@@ -463,12 +482,13 @@ func (s *Service) downloadFromOsu(task *Task) (string, error) {
 	}
 
 	dbUpdate := &store.Song{
-		ID:       task.ID,
-		FilePath: finalAudioPath,
-		ImageURL: finalImagePath,
-		Title:    meta.Title,
-		Artist:   meta.Artist,
-		BPM:      meta.BPM,
+		ID:         task.ID,
+		FilePath:   finalAudioPath,
+		ImageURL:   finalImagePath,
+		Title:      meta.Title,
+		Artist:     meta.Artist,
+		BPM:        meta.BPM,
+		DurationMs: durationMs,
 	}
 
 	if err := s.Store.UpdateSongFullMetadata(context.Background(), dbUpdate); err != nil {
@@ -481,8 +501,6 @@ func (s *Service) downloadFromOsu(task *Task) (string, error) {
 
 	return finalAudioPath, nil
 }
-
-// --- HELPERS ---
 
 func extractFileFromZip(f *zip.File, destPath string) error {
 	rc, err := f.Open()
@@ -584,21 +602,27 @@ func (s *Service) applyMetadata(path string, songID int64) {
 	}
 	defer func() { _ = tag.Close() }()
 
-	// Scenario A: Manual Download (DB says "Unknown") -> Read from File to DB
 	if strings.HasPrefix(song.Title, "Unknown") {
 		newTitle := tag.Title()
 		newArtist := tag.Artist()
+
+		if strings.HasSuffix(newArtist, " - Topic") {
+			newArtist = strings.TrimSuffix(newArtist, " - Topic")
+			// Write the cleaned artist back to the file
+			tag.SetArtist(newArtist)
+			if saveErr := tag.Save(); saveErr != nil {
+				log.Printf("WARN: Failed to save cleaned metadata to file: %v", saveErr)
+			}
+		}
+
 		if newTitle != "" {
-			// Update the local struct so we are up to date
 			song.Title = newTitle
 			song.Artist = newArtist
-			s.Store.UpdateSongFullMetadata(context.Background(), song)
+			_ = s.Store.UpdateSongFullMetadata(context.Background(), song)
 		}
 		return
 	}
 
-	// Scenario B: Synced (DB has Data) -> Write DB to File
-	// This ensures the file matches what we see in the app
 	tag.SetTitle(song.Title)
 	tag.SetArtist(song.Artist)
 	tag.SetAlbum(song.Album)

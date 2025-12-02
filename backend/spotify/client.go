@@ -140,3 +140,40 @@ func (c *Client) FetchTracksFromURL(ctx context.Context, token *oauth2.Token, ur
 
 	return songs, nil
 }
+
+// GetMetadata fetches a single track
+func (c *Client) GetMetadata(ctx context.Context, token *oauth2.Token, urlStr string) (*store.Song, error) {
+	client := c.NewClientFromToken(token)
+
+	// Parse ID: https://open.spotify.com/track/12345?si=...
+	parts := strings.Split(urlStr, "/")
+	idStr := strings.Split(parts[len(parts)-1], "?")[0]
+	id := spotify.ID(idStr)
+
+	fullTrack, err := client.GetTrack(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	rawJSON, _ := json.Marshal(fullTrack)
+
+	s := &store.Song{
+		Title:       fullTrack.Name,
+		Artist:      "Unknown",
+		Album:       fullTrack.Album.Name,
+		DurationMs:  int64(fullTrack.Duration),
+		Provider:    "spotify",
+		ProviderID:  string(fullTrack.ID),
+		Status:      "Pending",
+		RawMetadata: string(rawJSON),
+	}
+
+	if len(fullTrack.Artists) > 0 {
+		s.Artist = fullTrack.Artists[0].Name
+	}
+	if len(fullTrack.Album.Images) > 0 {
+		s.ImageURL = fullTrack.Album.Images[0].URL
+	}
+
+	return s, nil
+}

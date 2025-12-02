@@ -6,6 +6,11 @@ import (
 	"log"
 )
 
+type SongConfig struct {
+	offset int64
+	limit  int64
+}
+
 func (s *Store) SaveSong(ctx context.Context, song *Song) (int64, error) {
 	query := `
 	INSERT INTO songs (title, artist, album, image_url, duration_ms, bpm, energy, valence, provider, provider_id, raw_metadata, status)
@@ -53,6 +58,63 @@ func (s *Store) GetSong(ctx context.Context, id int64) (*Song, error) {
 	return &song, nil
 }
 
+func (s *Store) GetSongs(ctx context.Context, config SongConfig) ([]*Song, error) {
+	query := `
+	SELECT id, title, artist, album, image_url, provider, provider_id, file_path, status, bpm, energy, valence, duration_ms FROM songs
+	where id > ?
+  LIMIT ?
+	`
+	rows, err := s.db.QueryContext(ctx, query, config.offset, config.limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var songs []*Song
+
+	for rows.Next() {
+		var song Song
+		var filePath sql.NullString
+		err := rows.Scan(&song.ID, &song.Title, &song.Artist, &song.Album, &song.ImageURL,
+			&song.Provider, &song.ProviderID, &filePath, &song.Status, &song.BPM, &song.Energy, &song.Valence, &song.DurationMs)
+		if err != nil {
+			return nil, err
+		}
+		song.FilePath = filePath.String
+		songs = append(songs, &song)
+	}
+
+	return songs, nil
+}
+
+func (s *Store) DeleteSong(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM playlist_songs WHERE song_id = ?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM play_history WHERE song_id = ?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM song_tags WHERE song_id = ?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM songs WHERE id = ?", id); err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func (s *Store) UpdateSongStatus(ctx context.Context, songID int64, status string) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE songs SET status = ? WHERE id = ?", status, songID)
 	return err
@@ -72,9 +134,9 @@ func (s *Store) UpdateSongProgress(ctx context.Context, id int64, progress float
 func (s *Store) UpdateSongFullMetadata(ctx context.Context, song *Song) error {
 	query := `
 	UPDATE songs 
-	SET file_path = ?, image_url = ?, title = ?, artist = ?, bpm = ?, status = 'Downloaded'
+	SET file_path = ?, image_url = ?, title = ?, artist = ?, bpm = ?, duration_ms = ?, status = 'Downloaded'
 	WHERE id = ?`
-	_, err := s.db.ExecContext(ctx, query, song.FilePath, song.ImageURL, song.Title, song.Artist, song.BPM, song.ID)
+	_, err := s.db.ExecContext(ctx, query, song.FilePath, song.ImageURL, song.Title, song.Artist, song.BPM, song.ID, song.DurationMs)
 	return err
 }
 
