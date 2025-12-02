@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"cryogon/rizumu-backend/downloader"
 	"cryogon/rizumu-backend/store"
@@ -19,6 +20,12 @@ func (s *Server) handleCreateDownload() http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Printf("ERROR: decoding request: %v", err)
 			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		// download each song the playlist as separate task
+		if strings.Contains(req.URL, "/playlist/") || strings.Contains(req.URL, "/album/") {
+			s.processPlaylistDownload(w, r, req.URL)
 			return
 		}
 

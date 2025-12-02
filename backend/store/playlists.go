@@ -46,6 +46,18 @@ func (s *Store) AddSongToPlaylist(ctx context.Context, playlistID, songID int64)
 	return err
 }
 
+func (s *Store) RemoveSongFromPlaylist(ctx context.Context, playlistID, songID int64) error {
+	query := "DELETE from playlist_songs WHERE playlist_id = ? AND song_id = ?"
+	_, err := s.db.ExecContext(ctx, query, playlistID, songID)
+	return err
+}
+
+func (s *Store) RemoveSongFromAllPlaylists(ctx context.Context, songID int64) error {
+	query := "DELETE from playlist_songs WHERE song_id = ?"
+	_, err := s.db.ExecContext(ctx, query, songID)
+	return err
+}
+
 func (s *Store) GetPlaylists() ([]*PlaylistV2, error) {
 	query := "SELECT * from playlists"
 	playlists, err := s.db.Query(query)

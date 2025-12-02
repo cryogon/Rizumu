@@ -42,5 +42,9 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	// Playlists
 	r.Get("/playlists", srv.getPlaylists())
 
+	// Songs
+	r.Get("/songs", srv.getSongs())
+	r.Delete("/songs/{songID}", srv.deleteSong())
+
 	return r
 }
