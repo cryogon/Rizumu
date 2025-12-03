@@ -7,8 +7,8 @@ import (
 )
 
 type SongConfig struct {
-	offset int64
-	limit  int64
+	Offset int64
+	Limit  int64
 }
 
 func (s *Store) SaveSong(ctx context.Context, song *Song) (int64, error) {
@@ -64,7 +64,7 @@ func (s *Store) GetSongs(ctx context.Context, config SongConfig) ([]*Song, error
 	where id > ?
   LIMIT ?
 	`
-	rows, err := s.db.QueryContext(ctx, query, config.offset, config.limit)
+	rows, err := s.db.QueryContext(ctx, query, config.Offset, config.Limit)
 	if err != nil {
 		return nil, err
 	}

@@ -7,16 +7,17 @@ import (
 )
 
 // PlaylistV2 : Same as playlist but with song count
+
 type PlaylistV2 struct {
-	ID          int64
-	Name        string
-	ImageURL    string
-	UserID      int64
-	Description string
-	SourceType  string // spotify', 'osu'
-	ExternalID  string // The ID on Spotify/osu!
-	CreatedAt   time.Time
-	SongCount   int64
+	ID          int64     `json:"id"`
+	UserID      int64     `json:"user_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	ImageURL    string    `json:"image_url"`
+	SourceType  string    `json:"source_type"`
+	ExternalID  string    `json:"external_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	SongCount   int64     `json:"song_count"`
 }
 
 func (s *Store) SavePlaylist(ctx context.Context, p *Playlist) (int64, error) {
