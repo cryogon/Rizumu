@@ -24,7 +24,7 @@ struct CategoryItem {
 
 #[derive(Deserialize)]
 struct Song {
-    id: String,
+    id: i64,
     title: String,
     artist: String,
     duration: String,
@@ -136,10 +136,8 @@ async fn fetch_items(category: String) -> Result<Vec<CategoryItem>> {
 }
 
 async fn fetch_songs(item_id: i64) -> Result<Vec<Song>> {
-    let songs = reqwest::get("http://localhost:8080/songs")
-        .await?
-        .json::<Vec<Song>>()
-        .await?;
+    let url = format!("http://localhost:8080/songs/playlist/{}", item_id);
+    let songs = reqwest::get(url).await?.json::<Vec<Song>>().await?;
     Ok(songs)
 }
 

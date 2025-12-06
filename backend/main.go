@@ -8,6 +8,7 @@ import (
 
 	"cryogon/rizumu-backend/downloader"
 	"cryogon/rizumu-backend/httpd"
+	"cryogon/rizumu-backend/player"
 	"cryogon/rizumu-backend/spotify"
 	"cryogon/rizumu-backend/store"
 
@@ -40,7 +41,9 @@ func main() {
 	dlSvc := downloader.NewService(db)
 	spotifyClient := spotify.NewClient(spotifyClientID, spotifyClientSecret)
 
-	router := httpd.NewRouter(dlSvc, spotifyClient, db)
+	musicPlayer := player.NewMusicPlayer()
+
+	router := httpd.NewRouter(dlSvc, spotifyClient, db, musicPlayer)
 
 	log.Println("Server listening on :8080")
 	if err := http.ListenAndServe(":8080", router); err != nil {

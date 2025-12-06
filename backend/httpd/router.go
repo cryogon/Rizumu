@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"cryogon/rizumu-backend/downloader"
+	"cryogon/rizumu-backend/player"
 	"cryogon/rizumu-backend/spotify"
 	"cryogon/rizumu-backend/store"
 )
@@ -16,13 +17,15 @@ type Server struct {
 	Downloader *downloader.Service
 	Spotify    *spotify.Client
 	Store      *store.Store
+	player     *player.MusicPlayer
 }
 
-func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store) http.Handler {
+func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store, player *player.MusicPlayer) http.Handler {
 	srv := &Server{
 		Downloader: dlSvc,
 		Spotify:    spotifyClient,
 		Store:      db,
+		player:     player,
 	}
 
 	r := chi.NewRouter()
@@ -44,7 +47,13 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 
 	// Songs
 	r.Get("/songs", srv.getSongs())
+	r.Get("/songs/playlist/{playlistID}", srv.getSongsByPlaylist())
 	r.Delete("/songs/{songID}", srv.deleteSong())
+
+	// Song Playback
+	r.Get("/play/{songID}", srv.playSong())
+	r.Get("/pp", srv.pauseResume()) // pp = pause player
+	r.Get("/stop", srv.stopSong())
 
 	return r
 }
