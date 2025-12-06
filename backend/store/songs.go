@@ -86,6 +86,35 @@ func (s *Store) GetSongs(ctx context.Context, config SongConfig) ([]*Song, error
 	return songs, nil
 }
 
+func (s *Store) GetSongsByPlaylist(ctx context.Context, playlistID int64) ([]*Song, error) {
+	query := `
+   SELECT s.id, s.title, s.artist, s.album, s.image_url, s.provider, s.provider_id, s.file_path, s.status, s.bpm, s.energy, s.valence, s.duration_ms
+   FROM songs s
+   INNER JOIN playlist_songs ps ON s.id = ps.song_id
+   WHERE ps.playlist_id = ?
+	`
+	rows, err := s.db.QueryContext(ctx, query, playlistID)
+	if err != nil {
+		return nil, err
+	}
+
+	var songs []*Song
+
+	for rows.Next() {
+		var song Song
+		var filePath sql.NullString
+		err := rows.Scan(&song.ID, &song.Title, &song.Artist, &song.Album, &song.ImageURL,
+			&song.Provider, &song.ProviderID, &filePath, &song.Status, &song.BPM, &song.Energy, &song.Valence, &song.DurationMs)
+		if err != nil {
+			return nil, err
+		}
+		song.FilePath = filePath.String
+		songs = append(songs, &song)
+	}
+
+	return songs, nil
+}
+
 func (s *Store) DeleteSong(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -658,3 +658,24 @@ func (s *Service) applyMetadata(path string, songID int64) {
 		log.Printf("WARN: Failed to save ID3 tags: %v", err)
 	}
 }
+
+func (s *Service) DownloadSong(song store.Song) error {
+	payload := DownloadPayload{
+		Mode: "download",
+		URL:  "",
+	}
+
+	sourceURL, err := utils.GetSourceURL(song.Provider, song.ProviderID)
+	if err != nil {
+		return err
+	}
+
+	payload.URL = sourceURL
+
+	_, err = s.CreateDownload(payload, song.ID)
+	if err != nil {
+		log.Printf("Failed to create download: %v", err)
+		return err
+	}
+	return nil
+}

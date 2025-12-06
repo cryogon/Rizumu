@@ -76,11 +76,40 @@ func (s *Server) getSongs() http.HandlerFunc {
 			limit = l
 		}
 
-		log.Printf("Query Params: %v", query)
 		songs, err := s.Store.GetSongs(r.Context(), store.SongConfig{
 			Offset: offset,
 			Limit:  limit,
 		})
+		if err != nil {
+			log.Fatalf("Failed to fetch songs. err: %v", err)
+			return
+		}
+
+		apiSongs := make([]ApiSong, 0, len(songs))
+		for _, song := range songs {
+			apiSongs = append(apiSongs, toAPISong(song))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		err = json.NewEncoder(w).Encode(apiSongs)
+		if err != nil {
+			log.Fatalf("Failed to encode songs. err: %v", err)
+			return
+		}
+	}
+}
+
+func (s *Server) getSongsByPlaylist() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		playlistID, err := strconv.ParseInt(chi.URLParam(r, "playlistID"), 10, 64)
+		if err != nil {
+			log.Printf("Invalid playlist ID. err:%v", err)
+			http.Error(w, "Invalid playlist ID", 400)
+			return
+		}
+
+		songs, err := s.Store.GetSongsByPlaylist(r.Context(), playlistID)
 		if err != nil {
 			log.Fatalf("Failed to fetch songs. err: %v", err)
 			return
@@ -136,6 +165,53 @@ func (s *Server) deleteSong() http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Song deleted successfully"))
+	}
+}
+
+func (s *Server) playSong() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		songID, err := strconv.ParseInt(chi.URLParam(r, "songID"), 10, 64)
+		if err != nil {
+			log.Printf("Invalid song ID. err:%v", err)
+			http.Error(w, "Invalid song ID", 400)
+			return
+		}
+
+		song, err := s.Store.GetSong(r.Context(), songID)
+		if err != nil {
+			http.Error(w, "Song not found", 404)
+			return
+		}
+
+		// clear current playing song first
+		s.player.Close()
+
+		s.player.AddSong(*song)
+		err = s.player.LoadSong(0)
+		if err != nil {
+			log.Fatalf("Failed to play song: %v", err)
+			return
+		}
+
+		fmt.Printf("Playlist: %v\n", s.player.GetPlaylist())
+		s.player.Play()
+		fmt.Printf("Playing: %s\n", s.player.GetCurrentSong().Title)
+
+		respondWithJSON(w, 200, map[string]string{"msg": "Playing"})
+	}
+}
+
+func (s *Server) pauseResume() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		state := s.player.TogglePause()
+		respondWithJSON(w, 200, map[string]string{"state": state})
+	}
+}
+
+func (s *Server) stopSong() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.player.Close()
+		respondWithJSON(w, 200, map[string]string{"state": "Stopped"})
 	}
 }
 
