@@ -17,10 +17,10 @@ type Server struct {
 	Downloader *downloader.Service
 	Spotify    *spotify.Client
 	Store      *store.Store
-	player     *player.MusicPlayer
+	player     *player.Player
 }
 
-func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store, player *player.MusicPlayer) http.Handler {
+func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *store.Store, player *player.Player) http.Handler {
 	srv := &Server{
 		Downloader: dlSvc,
 		Spotify:    spotifyClient,
@@ -51,7 +51,10 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	r.Delete("/songs/{songID}", srv.deleteSong())
 
 	// Song Playback
-	r.Get("/play/{songID}", srv.playSong())
+	r.Route("/play/{songID}", func(r chi.Router) {
+		r.Get("/", srv.playSong())
+		r.Get("/{playlistID}", srv.playSong())
+	})
 	r.Get("/pp", srv.pauseResume()) // pp = pause player
 	r.Get("/stop", srv.stopSong())
 

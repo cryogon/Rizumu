@@ -41,7 +41,7 @@ func main() {
 	dlSvc := downloader.NewService(db)
 	spotifyClient := spotify.NewClient(spotifyClientID, spotifyClientSecret)
 
-	musicPlayer := player.NewMusicPlayer()
+	musicPlayer := player.NewPlayer(dlSvc, db)
 
 	router := httpd.NewRouter(dlSvc, spotifyClient, db, musicPlayer)
 
