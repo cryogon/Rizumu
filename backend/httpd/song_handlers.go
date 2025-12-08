@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -177,25 +178,48 @@ func (s *Server) playSong() http.HandlerFunc {
 			return
 		}
 
-		song, err := s.Store.GetSong(r.Context(), songID)
-		if err != nil {
-			http.Error(w, "Song not found", 404)
-			return
+		playlistIDStr := chi.URLParam(r, "playlistID")
+		if playlistIDStr == "" {
+			log.Printf("Playlist ID not found, will only play one song. err:%v", err)
 		}
 
 		// clear current playing song first
 		s.player.Close()
 
-		s.player.AddSong(*song)
-		err = s.player.LoadSong(0)
-		if err != nil {
-			log.Fatalf("Failed to play song: %v", err)
-			return
+		if playlistIDStr != "" {
+			playlistID, err := strconv.ParseInt(playlistIDStr, 10, 64)
+			if err != nil {
+				log.Printf("Invalid playlist ID. err:%v", err)
+				http.Error(w, "Invalid playlist ID", 400)
+				return
+			}
+
+			var filteredSong []store.Song
+			songs, err := s.Store.GetSongsByPlaylist(r.Context(), playlistID)
+			if err != nil {
+				log.Printf("Failed to fetch song. err:%v", err)
+				http.Error(w, "Failed to fetch song", 500)
+				return
+			}
+
+			for _, song := range songs {
+				if song.ID >= songID {
+					filteredSong = append(filteredSong, *song)
+				}
+			}
+
+			s.player.AddSongs(filteredSong)
+		} else {
+			song, err := s.Store.GetSong(context.Background(), songID)
+			if err != nil {
+				log.Printf("Failed to fetch song. err:%v", err)
+				http.Error(w, "Failed to fetch song", 500)
+				return
+			}
+			s.player.AddSong(*song)
 		}
 
-		fmt.Printf("Playlist: %v\n", s.player.GetPlaylist())
 		s.player.Play()
-		fmt.Printf("Playing: %s\n", s.player.GetCurrentSong().Title)
 
 		respondWithJSON(w, 200, map[string]string{"msg": "Playing"})
 	}
