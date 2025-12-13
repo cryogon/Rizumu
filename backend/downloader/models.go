@@ -8,10 +8,11 @@ type DownloadPayload struct {
 type TaskStatus string
 
 const (
-	StatusPending     TaskStatus = "Pending"
-	StatusDownloading TaskStatus = "Downloading"
-	StatusComplete    TaskStatus = "Complete"
-	StatusFailed      TaskStatus = "StatusFailed"
+	StatusPending      TaskStatus = "Pending"
+	StatusDownloading  TaskStatus = "Downloading"
+	StatusComplete     TaskStatus = "Complete"
+	StatusNotAvailable TaskStatus = "Not Available"
+	StatusFailed       TaskStatus = "StatusFailed"
 )
 
 type Task struct {

@@ -57,6 +57,8 @@ func NewRouter(dlSvc *downloader.Service, spotifyClient *spotify.Client, db *sto
 	})
 	r.Get("/pp", srv.pauseResume()) // pp = pause player
 	r.Get("/stop", srv.stopSong())
+	r.Get("/next", srv.nextSong())
+	r.Get("/prev", srv.prevSong())
 
 	return r
 }

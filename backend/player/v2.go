@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"time"
 
 	"cryogon/rizumu-backend/downloader"
@@ -157,6 +158,14 @@ func (p *Player) Position() int {
 	return p.streamer.Position()
 }
 
+func (p *Player) PositionInSeconds() int {
+	speaker.Lock()
+	positionSamples := p.Position()
+	positionDuration := p.format.SampleRate.D(positionSamples)
+	speaker.Unlock()
+	return int(positionDuration.Seconds())
+}
+
 func (p *Player) Next() error {
 	nextIndex := p.getNextSongIndex()
 
@@ -202,6 +211,14 @@ func (p *Player) Close() {
 	p.playlists = []store.Song{}
 }
 
+func (p *Player) IsPlaying() bool {
+	return p.isPlaying
+}
+
+func (p *Player) CurrentSong() store.Song {
+	return p.playlists[p.songIndex]
+}
+
 func (p *Player) onSongEnd() {
 	go func() {
 		err := p.Next()
@@ -227,6 +244,28 @@ func (p *Player) prepareNextSong() {
 	if song.FilePath != "" {
 		return
 	}
+
+	// Remove all consecutive "Not Available" songs at nextIndex
+	for nextIndex < len(p.playlists) {
+		song = p.playlists[nextIndex]
+
+		if song.Status != "Not Available" {
+			break
+		}
+
+		fmt.Printf("Removing unavailable song: %v\n", song)
+		p.playlists = slices.Delete(p.playlists, nextIndex, nextIndex+1)
+
+		if nextIndex <= p.songIndex && p.songIndex > 0 {
+			p.songIndex--
+		}
+	}
+
+	// Check if we still have songs and if the next song already has a file
+	if nextIndex >= len(p.playlists) || p.playlists[nextIndex].FilePath != "" {
+		return
+	}
+	song = p.playlists[nextIndex]
 
 	go func() {
 		fmt.Printf("Downloading Next Song: Song: %v", song)
@@ -254,6 +293,13 @@ func (p *Player) prepareNextSong() {
 				continue
 			}
 
+			if s.Status == "Not Available" {
+				fmt.Printf("Song became unavailable during download: %v\n", s)
+				// Remove this song and try preparing the next one
+				p.removeSongAndPrepareNext(nextIndex)
+				return
+			}
+
 			if s.Status == "Downloaded" {
 				fmt.Printf("Downlaoded Song: %v", s)
 				p.playlists[nextIndex] = *s
@@ -261,4 +307,21 @@ func (p *Player) prepareNextSong() {
 			}
 		}
 	}()
+}
+
+func (p *Player) removeSongAndPrepareNext(index int) {
+	if index >= len(p.playlists) {
+		return
+	}
+
+	fmt.Printf("Removing bad song at index %d\n", index)
+	p.playlists = slices.Delete(p.playlists, index, index+1)
+
+	// Adjust songIndex if we deleted something before current position
+	if index <= p.songIndex && p.songIndex > 0 {
+		p.songIndex--
+	}
+
+	// Try to prepare the next song again
+	p.prepareNextSong()
 }

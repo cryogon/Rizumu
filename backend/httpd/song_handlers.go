@@ -239,6 +239,20 @@ func (s *Server) stopSong() http.HandlerFunc {
 	}
 }
 
+func (s *Server) nextSong() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.player.Next()
+		respondWithJSON(w, 200, map[string]string{"state": "Stopped"})
+	}
+}
+
+func (s *Server) prevSong() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.player.Previous()
+		respondWithJSON(w, 200, map[string]string{"state": "Stopped"})
+	}
+}
+
 // Helpers
 func formatDuration(ms int64) string {
 	seconds := ms / 1000

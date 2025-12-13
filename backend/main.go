@@ -8,6 +8,7 @@ import (
 
 	"cryogon/rizumu-backend/downloader"
 	"cryogon/rizumu-backend/httpd"
+	"cryogon/rizumu-backend/ipc"
 	"cryogon/rizumu-backend/player"
 	"cryogon/rizumu-backend/spotify"
 	"cryogon/rizumu-backend/store"
@@ -42,6 +43,11 @@ func main() {
 	spotifyClient := spotify.NewClient(spotifyClientID, spotifyClientSecret)
 
 	musicPlayer := player.NewPlayer(dlSvc, db)
+
+	ipcHandler := ipc.NewIPCHandler(musicPlayer, *db)
+
+	// start ipc server on different thread
+	go ipcHandler.Init()
 
 	router := httpd.NewRouter(dlSvc, spotifyClient, db, musicPlayer)
 

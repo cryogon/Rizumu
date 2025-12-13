@@ -81,12 +81,16 @@ func (s *Service) worker() {
 		}
 
 		finalPath, err := s.runDownloadJob(task)
+		_, existsErr := os.Stat(finalPath)
 
 		if err != nil {
 			log.Printf("[Worker] ERROR job %d: %v", task.ID, err)
-			// FIX 2: Handle error for Failed status
 			if dbErr := s.Store.UpdateSongStatus(context.Background(), task.ID, string(StatusFailed)); dbErr != nil {
 				log.Printf("[Worker] CRITICAL: Failed to mark job as failed: %v", dbErr)
+			}
+		} else if errors.Is(existsErr, os.ErrNotExist) {
+			if dbErr := s.Store.UpdateSongStatus(context.Background(), task.ID, "Not Available"); dbErr != nil {
+				log.Printf("[Worker] CRITICAL: Failed to save final path: %v", dbErr)
 			}
 		} else {
 			log.Printf("[Worker] FINISHED job %d. Path: %s", task.ID, finalPath)
@@ -275,7 +279,6 @@ func (s *Service) downloadFromSpotify(task *Task) (string, error) {
 		return "", fmt.Errorf("fallback download failed: %w", err)
 	}
 
-	log.Printf("[Worker] Fallback successful for %s", song.Title)
 	s.applyMetadata(finalPath, task.ID)
 	return finalPath, nil
 }
@@ -660,6 +663,10 @@ func (s *Service) applyMetadata(path string, songID int64) {
 }
 
 func (s *Service) DownloadSong(song store.Song) error {
+	if song.Status == "Not Available" {
+		return fmt.Errorf("[DS] Can't download this song")
+	}
+
 	payload := DownloadPayload{
 		Mode: "download",
 		URL:  "",
