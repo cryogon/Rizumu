@@ -27,6 +27,11 @@ func (s *Server) handleStreamSong() http.HandlerFunc {
 			return
 		}
 
+		if song.Status == "Not Available" {
+			http.Error(w, "Can't download this song", 404)
+			return
+		}
+
 		fileReady := false
 		if song.FilePath != "" {
 			if _, err := os.Stat(song.FilePath); err == nil {
