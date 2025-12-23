@@ -6,12 +6,14 @@ type CommandType string
 
 // What client can send
 const (
-	CmdPlay     CommandType = "play"
-	CmdPause    CommandType = "pause"
-	CmdStop     CommandType = "stop"
-	CmdDownload CommandType = "download"
-	CmdNext     CommandType = "next"
-	CmdPrev     CommandType = "prev"
+	CmdPlay      CommandType = "play"
+	CmdPause     CommandType = "pause"
+	CmdStop      CommandType = "stop"
+	CmdDownload  CommandType = "download"
+	CmdNext      CommandType = "next"
+	CmdPrev      CommandType = "prev"
+	CmdSongs     CommandType = "songs" // returns song
+	CmdPlaylists CommandType = "playlists"
 )
 
 type Command struct {
