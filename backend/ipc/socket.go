@@ -68,7 +68,7 @@ func (h *IPCHandler) handleClient(conn net.Conn) {
 			fmt.Printf("[IPC] Failed to parse command: %v", err)
 			continue
 		}
-		h.handleCommands(cmd)
+		h.handleCommands(cmd, conn)
 	}
 }
 
@@ -81,7 +81,7 @@ func (h *IPCHandler) removeClient(conn net.Conn) {
 	}
 }
 
-func (h *IPCHandler) handleCommands(cmd Command) {
+func (h *IPCHandler) handleCommands(cmd Command, conn net.Conn) {
 	fmt.Printf("[IPC] Got Cmd %v - %s\n", cmd, CmdPlay)
 	switch cmd.Type {
 	case CmdPlay:
@@ -112,9 +112,49 @@ func (h *IPCHandler) handleCommands(cmd Command) {
 	case CmdPause:
 		h.player.TogglePause()
 	case CmdNext:
-		h.player.Next()
+		err := h.player.Next()
+		if err != nil {
+			return
+		}
 	case CmdPrev:
-		h.player.Previous()
+		err := h.player.Previous()
+		if err != nil {
+			return
+		}
+	case CmdPlaylists:
+		playlists, err := h.store.GetPlaylists()
+		if err != nil {
+			fmt.Printf("[IPC] Failed to fetch playlists. %v", err)
+			return
+		}
+
+		data, err := NewMessage(playlists, "playlists")
+		if err != nil {
+			fmt.Printf("[IPC] Failed to parse playlists. %v", err)
+			return
+		}
+		data = append(data, '\n')
+		_, err = conn.Write(data)
+		if err != nil {
+			return
+		}
+	case CmdSongs:
+		songs, err := h.store.GetSongsByPlaylist(context.Background(), cmd.PlaylistID)
+		if err != nil {
+			fmt.Printf("[IPC] Failed to fetch songs by playlists. %v", err)
+			return
+		}
+
+		data, err := NewMessage(songs, "songs")
+		if err != nil {
+			fmt.Printf("[IPC] Failed to parse songs. %v", err)
+			return
+		}
+		data = append(data, '\n')
+		_, err = conn.Write(data)
+		if err != nil {
+			return
+		}
 	}
 }
 
