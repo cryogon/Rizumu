@@ -34,7 +34,7 @@ type PlayerState struct {
 	SongID   int64  `json:"song_id"`
 	SongName string `json:"song_name"`
 	Artist   string `json:"artist"`
-	Progress int    `json:"progreass"` // Current Song Pos
+	Progress int    `json:"progress"` // Current Song Pos
 	Duration int    `json:"duration"`  // Song's Duration
 }
 

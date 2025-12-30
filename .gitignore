@@ -3,6 +3,7 @@ covers/
 .env
 *.db
 test*.go
+debug.log
 
 # apple's garbage
 .DS_Store 

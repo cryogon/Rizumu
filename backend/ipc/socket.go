@@ -46,7 +46,7 @@ func (h *IPCHandler) Init() {
 		if err != nil {
 			continue
 		}
-		fmt.Printf("Client Joined")
+		fmt.Printf("[IPC] Client Joined")
 		go h.handleClient(conn)
 	}
 }
@@ -76,6 +76,7 @@ func (h *IPCHandler) removeClient(conn net.Conn) {
 	for i, c := range h.clients {
 		if c == conn {
 			h.clients = append(h.clients[:i], h.clients[i+1:]...)
+			fmt.Printf("[IPC] Client Disconnected")
 			break
 		}
 	}
@@ -174,7 +175,7 @@ func (h *IPCHandler) broadcastPlayerState() {
 			SongName: song.Title,
 			Artist:   song.Artist,
 			Progress: songPos,
-			Duration: int(song.DurationMs / 60),
+			Duration: int(song.DurationMs / 1000),
 		}
 
 		data, err := NewMessage(msg, "player_state")

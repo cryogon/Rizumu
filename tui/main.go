@@ -16,8 +16,7 @@ const (
 )
 
 var sectionStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder(), true).
-	Padding(0, 1)
+	Border(lipgloss.RoundedBorder(), true).Padding(0).Margin(0)
 
 type Section int
 
@@ -76,9 +75,12 @@ type model struct {
 
 	songModel table.Model
 	songs     []Song
+
+	songProgress *ProgressBar
+	playerState  PlayerState
 }
 
-func InitialModel(ipcClient *IPCClient) model {
+func InitialModel(ipcClient *IPCClient, progressBar *ProgressBar) model {
 	songColumns := []table.Column{
 		{Title: "ID", Width: 4},
 		{Title: "Title", Width: 30},
@@ -87,11 +89,12 @@ func InitialModel(ipcClient *IPCClient) model {
 	}
 
 	return model{
-		categories: []string{"Playlists", "Artists", "Album", "Providers"},
-		catCursor:  0,
-		itemCursor: 0,
-		ipc:        ipcClient,
-		songModel:  table.New(table.WithColumns(songColumns), table.WithFocused(true)),
+		categories:   []string{"Playlists", "Artists", "Album", "Providers"},
+		catCursor:    0,
+		itemCursor:   0,
+		ipc:          ipcClient,
+		songModel:    table.New(table.WithColumns(songColumns), table.WithFocused(true)),
+		songProgress: progressBar,
 	}
 }
 
@@ -107,13 +110,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case Message:
+
+		cmds = append(cmds, listenToIPC(m.ipc))
 		switch msg.Type {
 		case "playlists":
 			var playlists []Playlist
 			if err := json.Unmarshal(msg.Data, &playlists); err == nil {
 				m.items = playlists
 			}
-			cmds = append(cmds, listenToIPC(m.ipc))
 		case "songs":
 			var songs []Song
 			if err := json.Unmarshal(msg.Data, &songs); err == nil {
@@ -131,7 +135,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeSection = sectionSongs
 				m.songModel.Focus()
 			}
-			cmds = append(cmds, listenToIPC(m.ipc))
+		case "player_state":
+			var state PlayerState
+			if err := json.Unmarshal(msg.Data, &state); err == nil {
+				m.playerState = state
+				// Update the progress bar component
+				if state.Duration > 0 {
+					m.songProgress.Update(m.width, state.Progress, state.Duration)
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -139,6 +151,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		containerHeight := int(float64(m.height)*0.8) + 2
 		m.songModel.SetHeight(containerHeight)
+		m.songProgress.Update(msg.Width, 0, 1)
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -155,15 +169,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
-			if m.activeSection == sectionItems && len(m.items) > 0 {
-				selectedPlaylist := m.items[m.itemCursor]
-				cmds = append(cmds, fetchSongs(m.ipc, selectedPlaylist.ID))
-			}
-
-			if m.activeSection == sectionSongs && len(m.songs) > 0 {
-				playlist := m.items[m.itemCursor]
-				song := m.songs[m.songModel.Cursor()]
-				cmds = append(cmds, playSong(m.ipc, playlist.ID, song.ID))
+			switch m.activeSection {
+			case sectionCategories:
+				m.activeSection = sectionItems
+			case sectionSongs:
+				if len(m.songs) > 0 {
+					playlist := m.items[m.itemCursor]
+					song := m.songs[m.songModel.Cursor()]
+					cmds = append(cmds, playSong(m.ipc, playlist.ID, song.ID))
+				}
+			case sectionItems:
+				if len(m.items) > 0 {
+					selectedPlaylist := m.items[m.itemCursor]
+					m.activeSection = sectionSongs
+					cmds = append(cmds, fetchSongs(m.ipc, selectedPlaylist.ID))
+				}
 			}
 
 		case "down", "j":
@@ -231,35 +251,79 @@ func (m model) View() string {
 		itemView += fmt.Sprintf("%s %s\n", cursor, style.Render(item.Name))
 	}
 
-	leftColumnWidth := int(float64(m.width) * 0.3)
-	rightColumnWidth := m.width - leftColumnWidth
+	trueWidth := m.width
 
-	categorySectionHeight := 7
-	songSectionHeight := int(float64(m.height) * 0.8)
-	itemSectionHeight := songSectionHeight - categorySectionHeight
+	availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
+
+	footerHeight := 6
+	mainBodyHeight := availableHeight - footerHeight
+
+	rawTopLeftHeight := int(float64(mainBodyHeight) * 0.3)
+	rawBottomLeftHeight := mainBodyHeight - rawTopLeftHeight
+
+	finalTopLeftHeight := rawTopLeftHeight - sectionStyle.GetVerticalFrameSize()
+	finalBottomLeftHeight := rawBottomLeftHeight - sectionStyle.GetVerticalFrameSize()
+	finalRightHeight := mainBodyHeight - sectionStyle.GetVerticalFrameSize()
+
+	leftColumnWidth := int(float64(trueWidth) * 0.3)
+	rightColumnWidth := (trueWidth - leftColumnWidth) - 4
 
 	catList := sectionStyle.
 		Width(leftColumnWidth).
-		Height(categorySectionHeight).
+		Height(finalTopLeftHeight).
 		BorderForeground(getBorderColor(sectionCategories)).
-		Render(lipgloss.NewStyle().Foreground(normalColor).Bold(true).Render("LIBRARY") + "\n\n" + catView)
+		Render(lipgloss.NewStyle().Foreground(normalColor).Bold(true).Render("Library") + "\n\n" + catView)
 
 	itemList := sectionStyle.
 		Width(leftColumnWidth).
-		Height(itemSectionHeight).
+		Height(finalBottomLeftHeight).
 		BorderForeground(getBorderColor(sectionItems)).
-		Render(lipgloss.NewStyle().Foreground(normalColor).Bold(true).Render("PLAYLISTS") + "\n\n" + itemView)
+		Render(lipgloss.NewStyle().Foreground(normalColor).Bold(true).Render("Playlists") + "\n\n" + itemView)
 
 	songTable := sectionStyle.
-		Width(rightColumnWidth - 4).
-		Height(songSectionHeight + 2).
+		Width(rightColumnWidth).
+		Height(finalRightHeight).
 		BorderForeground(getBorderColor(sectionSongs)).
 		Render(m.songModel.View())
 
-	leftSide := lipgloss.JoinVertical(lipgloss.Left, catList, itemList)
-	topSide := lipgloss.JoinHorizontal(lipgloss.Top, leftSide, songTable)
+	songTitle := fmt.Sprintf(" %s - %s", m.playerState.Artist, m.playerState.SongName)
+	songProgress := fmt.Sprintf("%d / %d \n", m.playerState.Progress, m.playerState.Duration)
 
-	return topSide
+	contentWidth := trueWidth - 2
+	gapSize := contentWidth - lipgloss.Width(songTitle) - lipgloss.Width(songProgress)
+
+	topLine := lipgloss.JoinHorizontal(
+		lipgloss.Top, // Align items to the top within their own height (not relevant here, but good practice)
+		songTitle,
+		lipgloss.NewStyle().Width(gapSize).Render(""), // Dynamic spacing
+		songProgress,
+	)
+	styledTopLine := lipgloss.NewStyle().Width(contentWidth).Render(topLine)
+	progressBarView := m.songProgress.View()
+
+	centeredProgressBar := lipgloss.NewStyle().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Render(progressBarView)
+
+	playerBlockContent := lipgloss.JoinVertical(
+		lipgloss.Center,
+		styledTopLine,
+		centeredProgressBar,
+	)
+
+	playerSection := sectionStyle.
+		Width(trueWidth-2).
+		Height(mainBodyHeight-finalRightHeight).
+		BorderForeground(normalColor).
+		Align(lipgloss.Center, lipgloss.Bottom).
+		Render(playerBlockContent)
+
+	leftSide := lipgloss.JoinVertical(lipgloss.Top, catList, itemList)
+	topSide := lipgloss.JoinHorizontal(lipgloss.Top, leftSide, songTable)
+	player := lipgloss.JoinVertical(lipgloss.Bottom, topSide, playerSection)
+
+	return player
 }
 
 func main() {
@@ -273,7 +337,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	p := tea.NewProgram(InitialModel(ipcClient), tea.WithAltScreen())
+
+	progressBar := NewProgressBar()
+
+	p := tea.NewProgram(InitialModel(ipcClient, progressBar), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		panic(err)
 	}
