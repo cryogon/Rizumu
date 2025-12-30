@@ -27,7 +27,7 @@ func (p *ProgressBar) Update(width, currentProgress, totalDuration int) {
 	p.str = ""
 
 	normalizeProgress := (float64(currentProgress) / float64(totalDuration))
-	barWidth := width - 10
+	barWidth := width - 8
 
 	for i := 0; i < barWidth; i++ {
 		currentNormalizeProgress := float64(i) / float64(barWidth)

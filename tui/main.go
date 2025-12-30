@@ -61,6 +61,27 @@ func playSong(ipc *IPCClient, itemID int64, songID int64) tea.Cmd {
 	}
 }
 
+func nextSong(ipc *IPCClient) tea.Cmd {
+	return func() tea.Msg {
+		err := ipc.Send(CmdNext, 0, 0)
+		return err
+	}
+}
+
+func prevSong(ipc *IPCClient) tea.Cmd {
+	return func() tea.Msg {
+		err := ipc.Send(CmdPrev, 0, 0)
+		return err
+	}
+}
+
+func pausePlay(ipc *IPCClient) tea.Cmd {
+	return func() tea.Msg {
+		err := ipc.Send(CmdPause, 0, 0)
+		return err
+	}
+}
+
 type model struct {
 	ipc           *IPCClient
 	activeSection Section
@@ -175,34 +196,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Update table height to match the layout in View()
-		// Layout logic:
-		// availableHeight := m.height - 2 (border)
-		// mainBodyHeight := availableHeight - 6 (footer)
-		// finalRightHeight := mainBodyHeight - 2 (border)
-
 		availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
 		mainBodyHeight := availableHeight - 6
-		finalRightHeight := mainBodyHeight - sectionStyle.GetVerticalFrameSize()
+		finalRightHeight := max(mainBodyHeight-sectionStyle.GetVerticalFrameSize(), 1)
 
-		if finalRightHeight < 1 {
-			finalRightHeight = 1
-		}
-
-		m.songModel.SetHeight(finalRightHeight)
+		m.songModel.SetHeight(finalRightHeight + 2)
 		m.songProgress.Update(msg.Width, 0, 1)
 
 	case tea.KeyMsg:
-		// Calculate itemsPerPage for scrolling logic
 		availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
 		mainBodyHeight := availableHeight - 6
 		rawTopLeftHeight := int(float64(mainBodyHeight) * 0.3)
 		rawBottomLeftHeight := mainBodyHeight - rawTopLeftHeight
 		finalBottomLeftHeight := rawBottomLeftHeight - sectionStyle.GetVerticalFrameSize()
-		itemsPerPage := finalBottomLeftHeight - 2 // -2 for header
-		if itemsPerPage < 1 {
-			itemsPerPage = 1
-		}
+		itemsPerPage := max(finalBottomLeftHeight-2, 1) // -2 for header
 
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -256,6 +263,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.itemOffset = m.itemCursor
 				}
 			}
+		case "n":
+			cmds = append(cmds, nextSong(m.ipc))
+		case "p":
+			cmds = append(cmds, prevSong(m.ipc))
+		case " ":
+			cmds = append(cmds, pausePlay(m.ipc))
 		}
 	}
 
