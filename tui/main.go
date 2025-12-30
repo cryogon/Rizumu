@@ -72,6 +72,7 @@ type model struct {
 
 	items      []Playlist
 	itemCursor int
+	itemOffset int
 
 	songModel table.Model
 	songs     []Song
@@ -82,6 +83,7 @@ type model struct {
 
 func InitialModel(ipcClient *IPCClient, progressBar *ProgressBar) model {
 	songColumns := []table.Column{
+		{Title: "", Width: 2},
 		{Title: "ID", Width: 4},
 		{Title: "Title", Width: 30},
 		{Title: "Artist", Width: 20},
@@ -92,6 +94,7 @@ func InitialModel(ipcClient *IPCClient, progressBar *ProgressBar) model {
 		categories:   []string{"Playlists", "Artists", "Album", "Providers"},
 		catCursor:    0,
 		itemCursor:   0,
+		itemOffset:   0,
 		ipc:          ipcClient,
 		songModel:    table.New(table.WithColumns(songColumns), table.WithFocused(true)),
 		songProgress: progressBar,
@@ -124,7 +127,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.songs = songs
 				var songRows []table.Row
 				for _, song := range m.songs {
+					status := ""
+					if song.ID == m.playerState.SongID {
+						status = "▶ "
+					}
 					songRows = append(songRows, table.Row{
+						status,
 						fmt.Sprintf("%d", song.ID),
 						song.Title,
 						song.Artist,
@@ -143,17 +151,59 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if state.Duration > 0 {
 					m.songProgress.Update(m.width, state.Progress, state.Duration)
 				}
+
+				// Update table rows to reflect playing state
+				var songRows []table.Row
+				for _, song := range m.songs {
+					status := ""
+					if song.ID == m.playerState.SongID {
+						status = "▶ "
+					}
+					songRows = append(songRows, table.Row{
+						status,
+						fmt.Sprintf("%d", song.ID),
+						song.Title,
+						song.Artist,
+						fmt.Sprintf("%d", song.DurationMs),
+					})
+				}
+				m.songModel.SetRows(songRows)
 			}
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		containerHeight := int(float64(m.height)*0.8) + 2
-		m.songModel.SetHeight(containerHeight)
+
+		// Update table height to match the layout in View()
+		// Layout logic:
+		// availableHeight := m.height - 2 (border)
+		// mainBodyHeight := availableHeight - 6 (footer)
+		// finalRightHeight := mainBodyHeight - 2 (border)
+
+		availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
+		mainBodyHeight := availableHeight - 6
+		finalRightHeight := mainBodyHeight - sectionStyle.GetVerticalFrameSize()
+
+		if finalRightHeight < 1 {
+			finalRightHeight = 1
+		}
+
+		m.songModel.SetHeight(finalRightHeight)
 		m.songProgress.Update(msg.Width, 0, 1)
 
 	case tea.KeyMsg:
+		// Calculate itemsPerPage for scrolling logic
+		availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
+		mainBodyHeight := availableHeight - 6
+		rawTopLeftHeight := int(float64(mainBodyHeight) * 0.3)
+		rawBottomLeftHeight := mainBodyHeight - rawTopLeftHeight
+		finalBottomLeftHeight := rawBottomLeftHeight - sectionStyle.GetVerticalFrameSize()
+		itemsPerPage := finalBottomLeftHeight - 2 // -2 for header
+		if itemsPerPage < 1 {
+			itemsPerPage = 1
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -191,12 +241,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.catCursor++
 			} else if m.activeSection == sectionItems && m.itemCursor < len(m.items)-1 {
 				m.itemCursor++
+				// Scroll down
+				if m.itemCursor >= m.itemOffset+itemsPerPage {
+					m.itemOffset = m.itemCursor - itemsPerPage + 1
+				}
 			}
 		case "up", "k":
 			if m.activeSection == sectionCategories && m.catCursor > 0 {
 				m.catCursor--
 			} else if m.activeSection == sectionItems && m.itemCursor > 0 {
 				m.itemCursor--
+				// Scroll up
+				if m.itemCursor < m.itemOffset {
+					m.itemOffset = m.itemCursor
+				}
 			}
 		}
 	}
@@ -239,23 +297,12 @@ func (m model) View() string {
 
 	// Items
 	itemView := ""
-	for i, item := range m.items {
-		cursor := "  "
-		style := lipgloss.NewStyle().Foreground(normalColor)
-		if i == m.itemCursor && m.activeSection == sectionItems {
-			style = style.Foreground(activeColor).Bold(true)
-			cursor = ">>"
-		} else if i == m.itemCursor {
-			style = style.Foreground(activeColor)
-		}
-		itemView += fmt.Sprintf("%s %s\n", cursor, style.Render(item.Name))
-	}
 
 	trueWidth := m.width
 
 	availableHeight := m.height - sectionStyle.GetVerticalFrameSize()
 
-	footerHeight := 6
+	footerHeight := 4
 	mainBodyHeight := availableHeight - footerHeight
 
 	rawTopLeftHeight := int(float64(mainBodyHeight) * 0.3)
@@ -263,16 +310,65 @@ func (m model) View() string {
 
 	finalTopLeftHeight := rawTopLeftHeight - sectionStyle.GetVerticalFrameSize()
 	finalBottomLeftHeight := rawBottomLeftHeight - sectionStyle.GetVerticalFrameSize()
-	finalRightHeight := mainBodyHeight - sectionStyle.GetVerticalFrameSize()
+	finalRightHeight := mainBodyHeight - sectionStyle.GetVerticalFrameSize() + 1
 
 	leftColumnWidth := int(float64(trueWidth) * 0.3)
 	rightColumnWidth := (trueWidth - leftColumnWidth) - 4
+
+	// Helpers for View
+	truncate := func(s string, w int) string {
+		if w <= 3 {
+			return ""
+		}
+		if len(s) > w {
+			return s[:w-3] + "..."
+		}
+		return s
+	}
 
 	catList := sectionStyle.
 		Width(leftColumnWidth).
 		Height(finalTopLeftHeight).
 		BorderForeground(getBorderColor(sectionCategories)).
 		Render(lipgloss.NewStyle().Foreground(normalColor).Bold(true).Render("Library") + "\n\n" + catView)
+
+	// Calculate visible items
+	itemsPerPage := finalBottomLeftHeight - 2
+	if itemsPerPage < 1 {
+		itemsPerPage = 1
+	}
+
+	// Slice items based on offset
+	start := m.itemOffset
+	end := start + itemsPerPage
+	if end > len(m.items) {
+		end = len(m.items)
+	}
+	if start > end {
+		start = end // Should not happen if logic is correct
+	}
+
+	visibleItems := m.items[start:end]
+
+	itemView = ""
+	for i, item := range visibleItems {
+		realIndex := start + i
+		cursor := "  "
+		style := lipgloss.NewStyle().Foreground(normalColor)
+		if realIndex == m.itemCursor && m.activeSection == sectionItems {
+			style = style.Foreground(activeColor).Bold(true)
+			cursor = ">>"
+		} else if realIndex == m.itemCursor {
+			style = style.Foreground(activeColor)
+		}
+
+		// Truncate name to fit width
+		// Width available = leftColumnWidth - 2 (cursor) - 1 (space) = leftColumnWidth - 3
+		// But let's be safe and use leftColumnWidth - 4
+		displayName := truncate(item.Name, leftColumnWidth-4)
+
+		itemView += fmt.Sprintf("%s %s\n", cursor, style.Render(displayName))
+	}
 
 	itemList := sectionStyle.
 		Width(leftColumnWidth).
@@ -314,7 +410,7 @@ func (m model) View() string {
 
 	playerSection := sectionStyle.
 		Width(trueWidth-2).
-		Height(mainBodyHeight-finalRightHeight).
+		Height(footerHeight-sectionStyle.GetVerticalFrameSize()).
 		BorderForeground(normalColor).
 		Align(lipgloss.Center, lipgloss.Bottom).
 		Render(playerBlockContent)
